@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WorldView</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & Base ───────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:   #00ff88;
+      --amber:   #ffaa00;
+      --red:     #ff3333;
+      --blue:    #00aaff;
+      --dim:     rgba(0, 255, 136, 0.15);
+      --border:  rgba(0, 255, 136, 0.3);
+      --bg:      #000b06;
+      --font-mono: 'Share Tech Mono', monospace;
+      --font-ui:   'Barlow Condensed', sans-serif;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--green);
+      font-family: var(--font-mono);
+      cursor: crosshair;
+    }
+
+    /* ── Globe Container ────────────────────────── */
+    #cesium-container {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ── HUD Shell ──────────────────────────────── */
+    #hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* ── Corner Brackets ────────────────────────── */
+    .corner {
+      position: absolute;
+      width: 28px; height: 28px;
+      opacity: 0.7;
+    }
+    .corner--tl { top: 16px; left: 16px; border-top: 1.5px solid var(--green); border-left: 1.5px solid var(--green); }
+    .corner--tr { top: 16px; right: 16px; border-top: 1.5px solid var(--green); border-right: 1.5px solid var(--green); }
+    .corner--bl { bottom: 16px; left: 16px; border-bottom: 1.5px solid var(--green); border-left: 1.5px solid var(--green); }
+    .corner--br { bottom: 16px; right: 16px; border-bottom: 1.5px solid var(--green); border-right: 1.5px solid var(--green); }
+
+    /* ── Top Bar ────────────────────────────────── */
+    #top-bar {
+      position: absolute;
+      top: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 24px;
+      font-family: var(--font-ui);
+      font-size: 11px; letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--green);
+      opacity: 0.85;
+    }
+    #top-bar .logo {
+      font-size: 15px; font-weight: 700; letter-spacing: 0.3em;
+    }
+    #top-bar .divider {
+      width: 1px; height: 16px;
+      background: var(--border);
+    }
+    #clock {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    /* ── Status Ticker ──────────────────────────── */
+    #status-bar {
+      position: absolute;
+      bottom: 24px; left: 50%; transform: translateX(-50%);
+      font-size: 10px; letter-spacing: 0.12em;
+      color: var(--green);
+      opacity: 0.5;
+      font-family: var(--font-ui);
+      text-transform: uppercase;
+    }
+
+    /* ── Left Panel — Layer Toggles ─────────────── */
+    #panel-left {
+      position: absolute;
+      top: 50%; left: 20px;
+      transform: translateY(-50%);
+      display: flex; flex-direction: column; gap: 8px;
+      pointer-events: all;
+    }
+
+    .layer-btn {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(0,0,0,0.6);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 7px 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      backdrop-filter: blur(6px);
+      width: 160px;
+    }
+    .layer-btn .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .layer-btn:hover {
+      background: var(--dim);
+      border-color: var(--green);
+    }
+    .layer-btn.active {
+      background: var(--dim);
+      border-color: var(--green);
+    }
+    .layer-btn.inactive .dot { background: #333; }
+    .layer-btn.inactive { color: #446655; border-color: #1a3328; }
+
+    /* ── Right Panel — Shader Modes ─────────────── */
+    #panel-right {
+      position: absolute;
+      top: 50%; right: 20px;
+      transform: translateY(-50%);
+      display: flex; flex-direction: column; gap: 8px;
+      pointer-events: all;
+    }
+
+    .shader-btn {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-ui);
+      font-size: 11px; letter-spacing: 0.15em;
+      text-transform: uppercase; font-weight: 600;
+      padding: 8px 18px;
+      cursor: pointer;
+      transition: all 0.15s;
+      backdrop-filter: blur(6px);
+      text-align: center;
+      width: 120px;
+    }
+    .shader-btn:hover { background: var(--dim); }
+    .shader-btn.active {
+      background: var(--green);
+      color: #000;
+      border-color: var(--green);
+    }
+    .shader-btn[data-mode="flir"].active    { background: #ff6600; border-color: #ff6600; color: #000; }
+    .shader-btn[data-mode="crt"].active     { background: #ffaa00; border-color: #ffaa00; color: #000; }
+    .shader-btn[data-mode="anime"].active   { background: #cc44ff; border-color: #cc44ff; color: #000; }
+
+    /* ── Coords Readout ─────────────────────────── */
+    #coords {
+      position: absolute;
+      bottom: 48px; left: 24px;
+      font-size: 10px; letter-spacing: 0.08em;
+      opacity: 0.6;
+      line-height: 1.8;
+    }
+
+    /* ── Loading Screen ─────────────────────────── */
+    #loading {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 20px;
+      z-index: 100;
+      transition: opacity 0.8s ease;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+
+    .load-logo {
+      font-family: var(--font-ui);
+      font-size: 32px; font-weight: 700;
+      letter-spacing: 0.4em;
+      text-transform: uppercase;
+      color: var(--green);
+    }
+    .load-bar-wrap {
+      width: 240px; height: 2px;
+      background: #0a1f14;
+      position: relative; overflow: hidden;
+    }
+    .load-bar {
+      height: 100%;
+      background: var(--green);
+      width: 0%;
+      transition: width 0.4s ease;
+      box-shadow: 0 0 8px var(--green);
+    }
+    .load-status {
+      font-size: 10px; letter-spacing: 0.2em;
+      text-transform: uppercase; opacity: 0.5;
+    }
+
+    /* ── Scanline overlay (CRT mode) ────────────── */
+    #scanlines {
+      position: fixed; inset: 0;
+      pointer-events: none; z-index: 5;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    body.mode-crt #scanlines { opacity: 1; }
+
+    /* ── NVG tint overlay ───────────────────────── */
+    #nvg-overlay {
+      position: fixed; inset: 0;
+      pointer-events: none; z-index: 4;
+      background: radial-gradient(ellipse at center, rgba(0,60,10,0) 40%, rgba(0,0,0,0.6) 100%);
+      opacity: 0;
+      transition: opacity 0.3s;
+      mix-blend-mode: multiply;
+    }
+    body.mode-nvg #nvg-overlay { opacity: 1; }
+
+    /* ── Pulse animation ────────────────────────── */
+    @keyframes pulse {
+      0%, 100% { opacity: 0.7; }
+      50%       { opacity: 0.3; }
+    }
+    .pulse { animation: pulse 2s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+
+  <!-- Loading Screen -->
+  <div id="loading">
+    <div class="load-logo">WorldView</div>
+    <div class="load-bar-wrap"><div class="load-bar" id="load-bar"></div></div>
+    <div class="load-status" id="load-status">Initializing 3D Tiles…</div>
+  </div>
+
+  <!-- Globe -->
+  <div id="cesium-container"></div>
+
+  <!-- Visual overlays -->
+  <div id="scanlines"></div>
+  <div id="nvg-overlay"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="corner corner--tl"></div>
+    <div class="corner corner--tr"></div>
+    <div class="corner corner--bl"></div>
+    <div class="corner corner--br"></div>
+
+    <div id="top-bar">
+      <span class="logo">WorldView</span>
+      <div class="divider"></div>
+      <span id="clock">--:--:-- UTC</span>
+      <div class="divider"></div>
+      <span class="pulse" id="live-indicator">● LIVE</span>
+    </div>
+
+    <!-- Layer toggles -->
+    <div id="panel-left">
+      <button class="layer-btn active" data-layer="flights">
+        <span class="dot"></span> Air Traffic
+      </button>
+      <button class="layer-btn active" data-layer="satellites">
+        <span class="dot"></span> Satellites
+      </button>
+      <button class="layer-btn inactive" data-layer="traffic">
+        <span class="dot"></span> Street Flow
+      </button>
+      <button class="layer-btn inactive" data-layer="cctv">
+        <span class="dot"></span> CCTV Feeds
+      </button>
+    </div>
+
+    <!-- Shader modes -->
+    <div id="panel-right">
+      <button class="shader-btn active" data-mode="normal">Normal</button>
+      <button class="shader-btn" data-mode="nvg">NVG</button>
+      <button class="shader-btn" data-mode="flir">FLIR</button>
+      <button class="shader-btn" data-mode="crt">CRT</button>
+      <button class="shader-btn" data-mode="anime">Anime</button>
+    </div>
+
+    <!-- Coords -->
+    <div id="coords">
+      <div id="coord-lat">LAT —</div>
+      <div id="coord-lon">LON —</div>
+      <div id="coord-alt">ALT —</div>
+    </div>
+
+    <div id="status-bar">
+      System nominal · All feeds active · <span id="entity-count">0</span> tracked entities
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
