@@ -133,10 +133,53 @@ Rate limits: 4,000 credits/day authenticated · anonymous access is heavily thro
 
 ### Prerequisites
 
-- Node.js v18+
-- At minimum, a **free Cesium ion token** is recommended (no credit card)
+- **Node.js v22 LTS** (minimum v20.19+) — earlier versions are not supported by Vite
+- At minimum, a **free Cesium ion token** is recommended (no credit card required)
 
-### Installation
+> **Quick check:** run `node -v` in your terminal. If the version is below v20.19, follow the install steps for your OS below before continuing.
+
+---
+
+### 🪟 Windows 11
+
+**Option A — Direct install (simplest)**
+
+1. Download the **Node.js LTS** installer (`.msi`) from [nodejs.org](https://nodejs.org)
+2. Run the installer — it sets up both `node` and `npm` automatically
+3. Open **PowerShell** or **Windows Terminal** and continue with the installation steps below
+
+**Option B — WSL2 (recommended for development)**
+
+WSL2 gives you a full Linux environment on Windows and avoids occasional `node_modules` permission quirks.
+
+1. Install WSL2: open PowerShell as Administrator and run:
+   ```powershell
+   wsl --install
+   ```
+2. Restart, then open the **Ubuntu** app from the Start menu
+3. Inside Ubuntu, install Node.js via NodeSource:
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+   sudo apt install -y nodejs
+   ```
+4. Continue with the installation steps below, inside the Ubuntu terminal
+
+> ⚠️ **WSL2 + LAN note:** accessing the dev server from other devices on your network requires extra WSL2 network bridging config. If LAN access matters to you, use **Option A** (direct Windows install) instead.
+
+---
+
+### 🐧 Linux (Debian 13 / Ubuntu)
+
+> Avoid installing Node.js via `apt` directly — the packaged version is too old. Use NodeSource to get the current LTS.
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs git
+```
+
+---
+
+### 📦 Installation (all platforms)
 
 ```bash
 git clone https://github.com/JerichoJack/WorldView.git
@@ -144,13 +187,19 @@ cd WorldView
 npm install
 ```
 
-### Minimum viable setup (fully free, zero cost, no credit card)
+---
+
+### ⚙️ Minimum viable setup (fully free, zero cost, no credit card)
 
 ```bash
+# Windows (PowerShell)
+copy .env.example .env
+
+# Linux / WSL2 / macOS
 cp .env.example .env
 ```
 
-Then set these three lines in `.env`:
+Then open `.env` and set these three lines:
 
 ```env
 VITE_MAP_PROVIDER=cesium
@@ -161,13 +210,49 @@ VITE_FLIGHT_PROVIDER=adsbfi
 VITE_SATELLITE_PROVIDER=celestrak
 ```
 
-### Run locally
+---
+
+### ▶️ Run locally (this machine only)
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+---
+
+### 🌐 Run on your local network (LAN)
+
+This makes WorldView accessible to any device on the same Wi-Fi or LAN — phones, tablets, other computers.
+
+**Dev mode (quickest):**
+
+```bash
+npm run dev -- --host
+```
+
+Vite will print both addresses, e.g.:
+
+```
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.50:5173/
+```
+
+Open the **Network** address on any device on your LAN.
+
+**Production build (more stable for longer sessions):**
+
+```bash
+npm run build
+npm run preview -- --host
+```
+
+This serves the compiled `/dist` folder — faster, no dev tooling overhead, better for sharing on a network long-term.
+
+> **Firewall note:**
+> - **Windows:** when you first run `--host`, Windows Firewall will prompt you to allow Node.js network access — click **Allow**. If the prompt doesn't appear, go to *Windows Defender Firewall → Allow an app* and add `node.exe`.
+> - **Linux:** if `ufw` is active, run `sudo ufw allow 5173` to open the port.
 
 ---
 
