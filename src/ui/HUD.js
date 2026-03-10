@@ -123,63 +123,85 @@ function initEntityPicker(viewer) {
 
 // ── Enrichment fetcher ────────────────────────────────────────────────────────
 
-const enrichCache = new Map(); // icao → enrichment data, cached for session
+// Aircraft static info cached by ICAO (reg, type, operator — doesn't change)
+const aircraftCache = new Map();
+// Route cached by callsign (changes per flight — short TTL)
+const routeCache    = new Map(); // callsign → { route, operator, ts }
+const ROUTE_TTL     = 5 * 60 * 1000; // 5 minutes
 
 async function fetchAircraftInfo(icao, callsign) {
-  if (enrichCache.has(icao)) return enrichCache.get(icao);
-
   const info = { registration: null, typecode: null, typeDesc: null, operator: null, route: null, country: null, year: null };
 
-  // Try adsbdb.com for registration + type
-  try {
-    const r = await fetch(`https://api.adsbdb.com/v0/aircraft/${icao}`, { signal: AbortSignal.timeout(5000) });
-    if (r.ok) {
-      const d = await r.json();
-      const a = d.response?.aircraft;
-      if (a) {
-        info.registration = a.registration    ?? null;
-        info.typecode     = a.type            ?? null;
-        info.typeDesc     = a.type_longname   ?? a.manufacturer ? `${a.manufacturer} ${a.type_longname ?? ''}`.trim() : null;
-        info.operator     = a.registered_owner ?? a.airline_name ?? null;
-        info.country      = a.registered_owner_country_iso_name ?? null;
-        info.year         = a.year_built      ?? null;
-      }
-    }
-  } catch { /* ignore */ }
-
-  // Try adsbdb.com for route (callsign-based)
-  if (callsign && callsign.length > 2) {
+  // ── 1. Static aircraft info (cached permanently per ICAO) ──────────────────
+  if (aircraftCache.has(icao)) {
+    Object.assign(info, aircraftCache.get(icao));
+  } else {
+    // Try adsbdb.com first
     try {
-      const r = await fetch(`https://api.adsbdb.com/v0/callsign/${callsign}`, { signal: AbortSignal.timeout(4000) });
+      const r = await fetch(`https://api.adsbdb.com/v0/aircraft/${icao}`, { signal: AbortSignal.timeout(5000) });
       if (r.ok) {
         const d = await r.json();
-        const fl = d.response?.flightroute;
-        if (fl) {
-          const origin = fl.origin?.iata_code ?? fl.origin?.icao_code ?? '';
-          const dest   = fl.destination?.iata_code ?? fl.destination?.icao_code ?? '';
-          if (origin && dest) info.route = `${origin} → ${dest}`;
-          if (!info.operator) info.operator = fl.airline?.name ?? null;
+        const a = d.response?.aircraft;
+        if (a) {
+          // type_code = ICAO designator (e.g. "A320"), type = manufacturer name
+          info.typecode     = a.type_code ?? null;
+          // Build a clean description: "A320 · Airbus A320-200"
+          const mfr  = a.manufacturer  ?? '';
+          const long = a.type_longname ?? '';
+          info.typeDesc     = [info.typecode, [mfr, long].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || null;
+          info.registration = a.registration ?? null;
+          info.operator     = a.registered_owner ?? null;
+          info.country      = a.registered_owner_country_iso_name ?? null;
+          info.year         = a.year_built ?? null;
         }
       }
     } catch { /* ignore */ }
+
+    // Fallback: hexdb.io
+    if (!info.registration) {
+      try {
+        const r = await fetch(`https://hexdb.io/api/v1/aircraft/${icao}`, { signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const d = await r.json();
+          info.registration = d.Registration    ?? null;
+          if (!info.typecode)  info.typecode  = d.ICAOTypeCode ?? null;
+          if (!info.typeDesc)  info.typeDesc   = d.Type ?? null;
+          if (!info.operator)  info.operator   = d.RegisteredOwners ?? null;
+          if (!info.country)   info.country    = d.Country ?? null;
+        }
+      } catch { /* ignore */ }
+    }
+
+    aircraftCache.set(icao, { ...info });
   }
 
-  // Fallback: hexdb.io for registration if adsbdb gave nothing
-  if (!info.registration) {
-    try {
-      const r = await fetch(`https://hexdb.io/api/v1/aircraft/${icao}`, { signal: AbortSignal.timeout(4000) });
-      if (r.ok) {
-        const d = await r.json();
-        info.registration = d.Registration ?? null;
-        if (!info.typecode) info.typecode = d.ICAOTypeCode ?? null;
-        if (!info.typeDesc) info.typeDesc  = d.Type ?? null;
-        if (!info.operator) info.operator  = d.RegisteredOwners ?? null;
-        if (!info.country)  info.country   = d.Country ?? null;
-      }
-    } catch { /* ignore */ }
+  // ── 2. Live route lookup by callsign (short TTL cache) ────────────────────
+  // Routes change per flight so we cache by callsign with a 5-min TTL,
+  // NOT by ICAO (which would show yesterday's route for today's flight).
+  if (callsign && callsign.length >= 4) {
+    const cached = routeCache.get(callsign);
+    if (cached && Date.now() - cached.ts < ROUTE_TTL) {
+      info.route    = cached.route;
+      if (!info.operator) info.operator = cached.operator;
+    } else {
+      try {
+        const r = await fetch(`https://api.adsbdb.com/v0/callsign/${callsign}`, { signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const d  = await r.json();
+          const fl = d.response?.flightroute;
+          if (fl) {
+            const orig = fl.origin?.iata_code      ?? fl.origin?.icao_code      ?? '';
+            const dest = fl.destination?.iata_code ?? fl.destination?.icao_code ?? '';
+            info.route = (orig && dest) ? `${orig} → ${dest}` : null;
+            const airline = fl.airline?.name ?? null;
+            if (!info.operator && airline) info.operator = airline;
+            routeCache.set(callsign, { route: info.route, operator: airline, ts: Date.now() });
+          }
+        }
+      } catch { /* ignore */ }
+    }
   }
 
-  enrichCache.set(icao, info);
   return info;
 }
 

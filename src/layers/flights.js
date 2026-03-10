@@ -334,14 +334,42 @@ function getShape(a) {
 
 const svgCache = new Map();
 
+// Contrasting glow color per aircraft class color
+function glowColor(fillColor) {
+  // Dark fills get a white glow; produce contrast against globe surface
+  const dark = ['#f44336','#ab47bc','#ce93d8','#ef5350'];
+  return dark.includes(fillColor) ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.95)';
+}
+
 function buildSvgUri(shape, color) {
   const key = `${shape}:${color}`;
   if (svgCache.has(key)) return svgCache.get(key);
 
-  const stroke = '#000000cc';
-  const svg = (SHAPES[shape] ?? SHAPES.generic)
-    .replace(/FILL/g, color)
-    .replace(/STROKE/g, stroke);
+  const glow   = glowColor(color);
+  const rawSvg = SHAPES[shape] ?? SHAPES.generic;
+
+  // Extract just the transform from the original <g> tag — strip fill/stroke placeholders
+  const gTagMatch = rawSvg.match(/<g([^>]*)>/);
+  const rawAttribs = gTagMatch ? gTagMatch[1] : ' transform="translate(50,50)"';
+  // Keep only the transform attribute, discard fill/stroke/stroke-width from template
+  const xformMatch = rawAttribs.match(/transform="([^"]+)"/);
+  const xform      = xformMatch ? ` transform="${xformMatch[1]}"` : '';
+
+  const innerMatch = rawSvg.match(/<g[^>]*>([\s\S]*?)<\/g>/);
+  const inner      = innerMatch ? innerMatch[1] : '';
+
+  const vb = (rawSvg.match(/viewBox="([^"]+)"/) || [])[1] || '0 0 100 100';
+  const w  = parseInt((rawSvg.match(/width="(\d+)"/)  || ['','28'])[1]) + 8;
+  const h  = parseInt((rawSvg.match(/height="(\d+)"/) || ['','28'])[1]) + 8;
+
+  // Two clean paint passes sharing only the transform:
+  //   Pass 1 — wide glow stroke, no fill (drawn behind)
+  //   Pass 2 — filled shape with thin stroke (drawn on top)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="${w}" height="${h}">
+  <g${xform} fill="none" stroke="${glow}" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">${inner}</g>
+  <g${xform} fill="${color}" stroke="${glow}" stroke-width="1" stroke-linejoin="round">${inner}</g>
+</svg>`;
+
   const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   svgCache.set(key, uri);
   return uri;
@@ -531,12 +559,11 @@ function renderAircraft(viewer, aircraft) {
         position: Cesium.Cartesian3.fromDegrees(a.lon, a.lat, altMetres),
         billboard: {
           image:                    icon,
-          width:                    28,
-          height:                   28,
+          width:                    36,
+          height:                   36,
           rotation:                 Cesium.Math.toRadians(-a.heading),
           alignedAxis:              Cesium.Cartesian3.UNIT_Z,
-          scaleByDistance:          new Cesium.NearFarScalar(1e3, 2.2, 8e6, 0.6),
-          translucencyByDistance:   new Cesium.NearFarScalar(1e3, 1.0, 1e7, 0.8),
+          scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.8, 8e6, 0.7),
           color:                    Cesium.Color.WHITE,
           disableDepthTestDistance: 5e6,
         },

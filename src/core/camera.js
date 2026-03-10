@@ -10,12 +10,34 @@ const DEFAULT_LON = parseFloat(import.meta.env.VITE_DEFAULT_LON ?? '-97.7431');
 const DEFAULT_LAT = parseFloat(import.meta.env.VITE_DEFAULT_LAT ?? '30.2672');
 const DEFAULT_ALT = parseFloat(import.meta.env.VITE_DEFAULT_ALT ?? '150000');
 
-export function initCamera(viewer) {
+// ── IP geolocation ────────────────────────────────────────────────────────────
+// Tries ipapi.co (free, no key), falls back to env defaults.
+
+async function getStartupLocation() {
+  try {
+    const res = await fetch('https://ipapi.co/json/', {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) throw new Error(`ipapi ${res.status}`);
+    const d = await res.json();
+    if (d.latitude && d.longitude) {
+      console.info(`[Camera] IP location: ${d.city ?? ''}, ${d.country_name ?? ''} (${d.latitude.toFixed(2)}, ${d.longitude.toFixed(2)})`);
+      return { lon: d.longitude, lat: d.latitude };
+    }
+  } catch (err) {
+    console.warn('[Camera] IP geolocation failed, using defaults:', err.message);
+  }
+  return { lon: DEFAULT_LON, lat: DEFAULT_LAT };
+}
+
+export async function initCamera(viewer) {
   const camera = viewer.camera;
 
-  // ── Initial position ─────────────────────────────────────────────────────
+  // ── Initial position — fly to user's IP location ─────────────────────────
+  const { lon, lat } = await getStartupLocation();
+
   camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(DEFAULT_LON, DEFAULT_LAT, DEFAULT_ALT),
+    destination: Cesium.Cartesian3.fromDegrees(lon, lat, DEFAULT_ALT),
     orientation: {
       heading: Cesium.Math.toRadians(0),
       pitch:   Cesium.Math.toRadians(-45),

@@ -37,7 +37,7 @@ async function boot() {
 
   // Step 2 – Camera
   setProgress(steps[1].pct, steps[1].label);
-  initCamera(viewer);
+  await initCamera(viewer);
 
   // Step 3 – Flights
   setProgress(steps[2].pct, steps[2].label);
