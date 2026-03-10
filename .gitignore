@@ -5,3 +5,4 @@ dist/
 .DS_Store
 *.msi
 package-lock.json
+opensky_api_credentials.json

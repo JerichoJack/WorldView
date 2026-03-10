@@ -71,6 +71,66 @@
       color: var(--green);
       opacity: 0.85;
     }
+
+    #city-search-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: all;
+    }
+
+    #city-search {
+      width: 180px;
+      padding: 5px 8px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      outline: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    #city-search::placeholder {
+      color: rgba(0, 255, 136, 0.45);
+      text-transform: none;
+      letter-spacing: 0.02em;
+    }
+
+    #city-search:focus {
+      border-color: var(--green);
+      background: rgba(0, 32, 20, 0.55);
+    }
+
+    #city-search-btn {
+      padding: 5px 10px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-ui);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    #city-search-btn:hover {
+      background: var(--dim);
+      border-color: var(--green);
+    }
+
+    #city-search-status {
+      min-width: 92px;
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      opacity: 0.6;
+      white-space: nowrap;
+      text-transform: uppercase;
+    }
     #top-bar .logo {
       font-size: 15px; font-weight: 700; letter-spacing: 0.3em;
     }
@@ -276,6 +336,12 @@
       <span class="logo">WorldView</span>
       <div class="divider"></div>
       <span id="clock">--:--:-- UTC</span>
+      <div class="divider"></div>
+      <div id="city-search-wrap">
+        <input id="city-search" type="text" placeholder="Search city or place" autocomplete="off" />
+        <button id="city-search-btn" type="button">Go</button>
+        <span id="city-search-status"></span>
+      </div>
       <div class="divider"></div>
       <span class="pulse" id="live-indicator">● LIVE</span>
     </div>

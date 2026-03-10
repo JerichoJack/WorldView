@@ -311,13 +311,14 @@ function getShape(a) {
     if (/^(EC|BO|BK|AS|AW|MD9)/.test(tc))  return 'helicopter';
     if (/^(B74|B77|A38|A34)/.test(tc))     return 'heavy';
     if (/^(B76|B78|A3[03]|A35)/.test(tc))  return 'widebody';
-    if (/^(B7|A3|E1|E17|E19|C90|RJ)/.test(tc)) return 'jet';
+    if (/^(B7|A3|E1|E17|E19|C90|RJ|T3|F\d|MIG|SU\d)/.test(tc)) return 'jet';
   }
 
   // 2. ADS-B category byte
   const cat = (a.category ?? '').toUpperCase();
   if (cat === 'A7' || cat === 'B7')  return 'helicopter';
-  if (cat === 'A5' || cat === 'A6')  return 'heavy';
+  if (cat === 'A5')                  return 'heavy';
+  if (cat === 'A6')                  return 'jet';
   if (cat === 'A3' || cat === 'A4')  return 'jet';
   if (cat === 'A1')                  return 'light';
   if (cat === 'A2')                  return 'turboprop';
@@ -359,8 +360,8 @@ function buildSvgUri(shape, color) {
   const inner      = innerMatch ? innerMatch[1] : '';
 
   const vb = (rawSvg.match(/viewBox="([^"]+)"/) || [])[1] || '0 0 100 100';
-  const w  = parseInt((rawSvg.match(/width="(\d+)"/)  || ['','28'])[1]) + 8;
-  const h  = parseInt((rawSvg.match(/height="(\d+)"/) || ['','28'])[1]) + 8;
+  const w  = 320;
+  const h  = 320;
 
   // Two clean paint passes sharing only the transform:
   //   Pass 1 — wide glow stroke, no fill (drawn behind)
@@ -375,13 +376,219 @@ function buildSvgUri(shape, color) {
   return uri;
 }
 
+
+// ── 3-D GLB model builder (used only in follow mode) ─────────────────────────
+
+function mergeMeshes(meshes) {
+  let tv = 0, ti = 0;
+  for (const m of meshes) { tv += m.verts.length; ti += m.idx.length; }
+  const verts = new Float32Array(tv), idx = new Uint16Array(ti);
+  let vo = 0, io = 0, vbase = 0;
+  for (const m of meshes) {
+    verts.set(m.verts, vo);
+    for (const i of m.idx) idx[io++] = i + vbase;
+    vbase += m.verts.length / 3; vo += m.verts.length;
+  }
+  return { verts, idx };
+}
+
+function buildJetGeometry() {
+  const meshes = [];
+  const rings = [[20,.10,.10],[16,.80,.90],[8,1.2,1.3],[0,1.3,1.4],[-10,1.2,1.2],[-16,.80,.90],[-20,.20,.50]];
+  const S = 8;
+  for (let r = 0; r < rings.length-1; r++) {
+    const [x0,w0,h0] = rings[r], [x1,w1,h1] = rings[r+1];
+    const v=[], ix=[];
+    for (let i=0;i<S;i++){const a=(i/S)*Math.PI*2; v.push(x0,Math.sin(a)*h0,Math.cos(a)*w0);}
+    for (let i=0;i<S;i++){const a=(i/S)*Math.PI*2; v.push(x1,Math.sin(a)*h1,Math.cos(a)*w1);}
+    for (let i=0;i<S;i++){const j=(i+1)%S; ix.push(i,S+i,S+j,i,S+j,j);}
+    meshes.push({verts:new Float32Array(v),idx:new Uint16Array(ix)});
+  }
+  const wT=[[8,.30,1.5],[-2,.80,24],[-6,.60,22],[-4,.05,1.2]];
+  const wB=wT.map(([x,y,z])=>[x,y-.45,z]);
+  const wA=[...wT,...wB.slice().reverse()];
+  const wv=[],wi=[];
+  for(const [x,y,z] of wA) wv.push(x,y,z);
+  for(let i=1;i<wA.length-1;i++) wi.push(0,i,i+1);
+  meshes.push({verts:new Float32Array(wv),idx:new Uint16Array(wi)});
+  const wvL=new Float32Array(wv); for(let i=2;i<wvL.length;i+=3) wvL[i]=-wvL[i];
+  meshes.push({verts:wvL,idx:new Uint16Array(wi)});
+  for(const [ex,ey,ez] of [[2,-1,9],[2,-1,-9]]){
+    const er=.55,el=5.5,es=8,ev=[],ei=[];
+    for(let i=0;i<es;i++){const a=(i/es)*Math.PI*2; ev.push(ex+el/2,ey+Math.sin(a)*er,ez+Math.cos(a)*er);}
+    for(let i=0;i<es;i++){const a=(i/es)*Math.PI*2; ev.push(ex-el/2,ey+Math.sin(a)*er,ez+Math.cos(a)*er);}
+    for(let i=0;i<es;i++){const j=(i+1)%es; ei.push(i,es+i,es+j,i,es+j,j);}
+    meshes.push({verts:new Float32Array(ev),idx:new Uint16Array(ei)});
+  }
+  const sT=[[-13,.30,1.3],[-17,.50,8],[-18,.35,7],[-15,.20,1.0]];
+  const sA=[...sT,...sT.map(([x,y,z])=>[x,y-.25,z]).reverse()];
+  const sv=[],si=[];
+  for(const [x,y,z] of sA) sv.push(x,y,z);
+  for(let i=1;i<sA.length-1;i++) si.push(0,i,i+1);
+  meshes.push({verts:new Float32Array(sv),idx:new Uint16Array(si)});
+  const svL=new Float32Array(sv); for(let i=2;i<svL.length;i+=3) svL[i]=-svL[i];
+  meshes.push({verts:svL,idx:new Uint16Array(si)});
+  meshes.push({
+    verts:new Float32Array([-12,.5,.3,-19,7.5,.2,-19,7,-.2,-12,.5,-.3,-19,.5,.3,-19,.5,-.3]),
+    idx:new Uint16Array([0,1,2,0,2,3,0,4,1,3,2,5]),
+  });
+  return mergeMeshes(meshes);
+}
+
+function buildHelicopterGeometry() {
+  const meshes = [];
+
+  // Main fuselage pod
+  const rings = [[8,0.7,0.9],[4,1.3,1.5],[0,1.5,1.7],[-4,1.2,1.3],[-8,0.8,0.9]];
+  const S = 10;
+  for (let r = 0; r < rings.length - 1; r++) {
+    const [x0,w0,h0] = rings[r], [x1,w1,h1] = rings[r + 1];
+    const v = [], ix = [];
+    for (let i = 0; i < S; i++) {
+      const a = (i / S) * Math.PI * 2;
+      v.push(x0, Math.sin(a) * h0, Math.cos(a) * w0);
+    }
+    for (let i = 0; i < S; i++) {
+      const a = (i / S) * Math.PI * 2;
+      v.push(x1, Math.sin(a) * h1, Math.cos(a) * w1);
+    }
+    for (let i = 0; i < S; i++) {
+      const j = (i + 1) % S;
+      ix.push(i, S + i, S + j, i, S + j, j);
+    }
+    meshes.push({ verts: new Float32Array(v), idx: new Uint16Array(ix) });
+  }
+
+  // Tail boom
+  meshes.push({
+    verts: new Float32Array([
+      -7.5,-0.2,-0.25,  -22,-0.2,-0.25,  -22,0.2,-0.25,  -7.5,0.2,-0.25,
+      -7.5,-0.2,0.25,   -22,-0.2,0.25,   -22,0.2,0.25,   -7.5,0.2,0.25,
+    ]),
+    idx: new Uint16Array([
+      0,1,2, 0,2,3, 4,6,5, 4,7,6,
+      0,4,5, 0,5,1, 3,2,6, 3,6,7,
+      0,3,7, 0,7,4, 1,5,6, 1,6,2,
+    ]),
+  });
+
+  // Main rotor mast and blades (flat cross)
+  meshes.push({
+    verts: new Float32Array([
+      -0.2,1.3,-0.2, 0.2,1.3,-0.2, 0.2,3.2,-0.2, -0.2,3.2,-0.2,
+      -0.2,1.3,0.2,  0.2,1.3,0.2,  0.2,3.2,0.2,  -0.2,3.2,0.2,
+      -0.35,3.3,-16, 0.35,3.3,-16, 0.35,3.3,16, -0.35,3.3,16,
+      -16,3.3,-0.35, 16,3.3,-0.35, 16,3.3,0.35, -16,3.3,0.35,
+    ]),
+    idx: new Uint16Array([
+      0,1,2, 0,2,3, 4,6,5, 4,7,6,
+      0,4,5, 0,5,1, 3,2,6, 3,6,7,
+      8,9,10, 8,10,11,
+      12,13,14, 12,14,15,
+    ]),
+  });
+
+  // Tail rotor (small cross near tail end)
+  meshes.push({
+    verts: new Float32Array([
+      -21.8,0.2,-2.4, -21.8,0.2,2.4, -22.2,0.2,2.4, -22.2,0.2,-2.4,
+      -22.0,-2.2,-0.2, -22.0,2.2,-0.2, -22.0,2.2,0.2, -22.0,-2.2,0.2,
+    ]),
+    idx: new Uint16Array([
+      0,1,2, 0,2,3,
+      4,5,6, 4,6,7,
+    ]),
+  });
+
+  return mergeMeshes(meshes);
+}
+
+const JET_MESH  = buildJetGeometry();
+const HELI_MESH = buildHelicopterGeometry();
+const glbCache  = new Map();
+
+function buildGlbUrl(shape, hexColor) {
+  const key = `${shape}:${hexColor}`;
+  if (glbCache.has(key)) return glbCache.get(key);
+
+  const mesh = shape === 'helicopter' ? HELI_MESH : JET_MESH;
+  const {verts,idx} = mesh;
+  const hex=hexColor.replace('#','');
+  const r=parseInt(hex.slice(0,2),16)/255, g=parseInt(hex.slice(2,4),16)/255, b=parseInt(hex.slice(4,6),16)/255;
+  const vb=verts.buffer, ib=idx.buffer, vl=vb.byteLength, il=ib.byteLength, bl=vl+il;
+  const bp=(4-(bl%4))%4, bcl=bl+bp;
+  let mnX=Infinity,mnY=Infinity,mnZ=Infinity,mxX=-Infinity,mxY=-Infinity,mxZ=-Infinity;
+  for(let i=0;i<verts.length;i+=3){
+    mnX=Math.min(mnX,verts[i]);  mxX=Math.max(mxX,verts[i]);
+    mnY=Math.min(mnY,verts[i+1]);mxY=Math.max(mxY,verts[i+1]);
+    mnZ=Math.min(mnZ,verts[i+2]);mxZ=Math.max(mxZ,verts[i+2]);
+  }
+  const json=JSON.stringify({asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0}],
+    meshes:[{primitives:[{attributes:{POSITION:0},indices:1,material:0,mode:4}]}],
+    materials:[{pbrMetallicRoughness:{baseColorFactor:[r,g,b,1],metallicFactor:.3,roughnessFactor:.5},doubleSided:true}],
+    accessors:[
+      {bufferView:0,componentType:5126,count:verts.length/3,type:'VEC3',min:[mnX,mnY,mnZ],max:[mxX,mxY,mxZ]},
+      {bufferView:1,componentType:5123,count:idx.length,type:'SCALAR',min:[0],max:[verts.length/3-1]},
+    ],
+    bufferViews:[{buffer:0,byteOffset:0,byteLength:vl,target:34962},{buffer:0,byteOffset:vl,byteLength:il,target:34963}],
+    buffers:[{byteLength:bl}],
+  });
+  const jp=(4-(json.length%4))%4, js=json+' '.repeat(jp), jb=new TextEncoder().encode(js), jl=jb.length;
+  const tl=12+8+jl+8+bcl, buf=new ArrayBuffer(tl), dv=new DataView(buf); let off=0;
+  dv.setUint32(off,0x46546C67,true);off+=4; dv.setUint32(off,2,true);off+=4; dv.setUint32(off,tl,true);off+=4;
+  dv.setUint32(off,jl,true);off+=4; dv.setUint32(off,0x4E4F534A,true);off+=4;
+  new Uint8Array(buf,off,jl).set(jb);off+=jl;
+  dv.setUint32(off,bcl,true);off+=4; dv.setUint32(off,0x004E4942,true);off+=4;
+  new Uint8Array(buf,off,vl).set(new Uint8Array(vb));off+=vl;
+  new Uint8Array(buf,off,il).set(new Uint8Array(ib));
+  const url=URL.createObjectURL(new Blob([buf],{type:'model/gltf-binary'}));
+  glbCache.set(key,url); return url;
+}
+
+const MODEL_SCALE = { heavy:1.4, widebody:1.2, jet:1.0, turboprop:.7, helicopter:.4, light:.25, generic:.9 };
+
+const ICON_SIZE_PX = {
+  heavy: 44,
+  widebody: 40,
+  jet: 36,
+  turboprop: 34,
+  helicopter: 34,
+  light: 30,
+  generic: 34,
+};
+
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /** @type {Map<string, Cesium.Entity>} */
 const entityMap = new Map();
+const trackStateMap = new Map();
+const trackPosPropMap = new Map();
 let enabled     = true;
 let oskToken    = null;
 let oskTokenExp = 0;
+let hideAllFlatIcons = false;
+
+const EARTH_RADIUS_M = 6378137;
+const KTS_TO_MPS = 0.514444;
+const FTMIN_TO_MPS = 0.00508;
+const MAX_PREDICT_SECONDS = 45;
+
+function iconRotationFromHeading(headingDeg = 0) {
+  // Billboard rotation is clockwise from north when alignedAxis is UNIT_Z.
+  return Cesium.Math.toRadians(-(headingDeg ?? 0));
+}
+
+function applyFlatIconVisibility() {
+  for (const [, entity] of entityMap) {
+    if (entity.billboard) {
+      entity.billboard.show = new Cesium.ConstantProperty(enabled && !hideAllFlatIcons);
+    }
+    if (entity.label) {
+      entity.label.show = new Cesium.ConstantProperty(enabled && !hideAllFlatIcons);
+    }
+  }
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -390,14 +597,85 @@ export async function initFlights(viewer) {
   await fetchAndRender(viewer);
   setInterval(() => { if (enabled) fetchAndRender(viewer); }, POLL_MS);
 
+  window.addEventListener('worldview:follow', () => {
+    hideAllFlatIcons = true;
+    applyFlatIconVisibility();
+  });
+
+  window.addEventListener('worldview:unfollow', () => {
+    hideAllFlatIcons = false;
+    applyFlatIconVisibility();
+  });
+
   return {
     setEnabled(val) {
       enabled = val;
       entityMap.forEach(e => { e.show = val; });
+      applyFlatIconVisibility();
     },
     get count()    { return entityMap.size; },
     get provider() { return PROVIDER; },
   };
+}
+
+/**
+ * Switch an aircraft between normal flat SVG view and follow 3D-model view.
+ * Called from HUD.js when follow starts/stops.
+ */
+export function setFollowMode(icaoHex, active) {
+  const entity = entityMap.get(icaoHex.toLowerCase());
+  if (!entity) return;
+
+  if (active) {
+    hideAllFlatIcons = true;
+    // Derive color from stored properties so military/commercial/other colors match
+    const dbFlags  = entity.properties?.dbFlags?.getValue?.() ?? 0;
+    const callsign = entity.properties?.callsign?.getValue?.() ?? '';
+    const color    = aircraftColor({ dbFlags, callsign });
+    const category = entity.properties?.category?.getValue?.() ?? '';
+    const typecode = entity.properties?.typecode?.getValue?.() ?? '';
+    const shape    = getShape({ category, typecode });
+    const glbUrl   = buildGlbUrl(shape, color);
+    const scale    = MODEL_SCALE[shape] ?? MODEL_SCALE.generic;
+    const cesColor = Cesium.Color.fromCssColorString(color);
+
+    // Build the HeadingPitchRoll orientation from stored heading
+    const heading = entity.properties?.heading?.getValue?.() ?? 0;
+    const pos     = entity.position?.getValue?.(Cesium.JulianDate.now());
+    if (pos) {
+      const hpr         = new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(heading), 0, 0);
+      entity.orientation = new Cesium.ConstantProperty(
+        Cesium.Transforms.headingPitchRollQuaternion(pos, hpr)
+      );
+    }
+
+    // Attach the 3-D model and hide the flat SVG icon
+    entity.model = new Cesium.ModelGraphics({
+      uri:              new Cesium.ConstantProperty(glbUrl),
+      scale:            new Cesium.ConstantProperty(scale),
+      maximumScale:     new Cesium.ConstantProperty(scale),
+      minimumPixelSize: new Cesium.ConstantProperty(12),
+      color:            new Cesium.ConstantProperty(cesColor),
+      colorBlendMode:   new Cesium.ConstantProperty(Cesium.ColorBlendMode.MIX),
+      colorBlendAmount: new Cesium.ConstantProperty(0.5),
+      shadows:          new Cesium.ConstantProperty(Cesium.ShadowMode.DISABLED),
+      silhouetteColor:  new Cesium.ConstantProperty(Cesium.Color.BLACK),
+      silhouetteSize:   new Cesium.ConstantProperty(1.0),
+      show:             new Cesium.ConstantProperty(true),
+    });
+    if (entity.billboard) entity.billboard.show = new Cesium.ConstantProperty(false);
+    if (entity.label) entity.label.show = new Cesium.ConstantProperty(false);
+    applyFlatIconVisibility();
+
+  } else {
+    hideAllFlatIcons = false;
+    // Restore SVG icon, hide model
+    if (entity.billboard) entity.billboard.show = new Cesium.ConstantProperty(enabled);
+    if (entity.label) entity.label.show = new Cesium.ConstantProperty(enabled);
+    if (entity.model)     entity.model.show     = new Cesium.ConstantProperty(false);
+    entity.orientation = undefined;
+    applyFlatIconVisibility();
+  }
 }
 
 // ── Viewport bounds ───────────────────────────────────────────────────────────
@@ -439,6 +717,11 @@ async function fetchAircraft(bounds) {
 // ── Provider: local proxy ─────────────────────────────────────────────────────
 
 async function fetchProxy(bounds) {
+  const numOr = (v, fallback = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
   let url = PROXY_URL;
   if (bounds) {
     const { minLon, minLat, maxLon, maxLat } = bounds;
@@ -457,14 +740,14 @@ async function fetchProxy(bounds) {
       callsign: (a.flight ?? a.r ?? '').trim(),
       lat:      a.lat,
       lon:      a.lon,
-      altFt:    a.alt_baro ?? a.alt_geom ?? 10000,
-      heading:  a.track ?? a.true_heading ?? 0,
-      kts:      a.gs ?? 0,
+      altFt:    numOr(a.alt_baro ?? a.alt_geom, 10000),
+      heading:  numOr(a.track ?? a.true_heading, 0),
+      kts:      numOr(a.gs, 0),
       category: a.category ?? '',
       typecode: (a.t ?? a.type ?? '').toUpperCase(),
       squawk:   a.squawk ?? '',
       dbFlags:  a.dbFlags ?? 0,
-      vert:     a.baro_rate ?? a.geom_rate ?? 0,
+      vert:     numOr(a.baro_rate ?? a.geom_rate, 0),
     }))
     .filter(a => a.id);
 }
@@ -517,55 +800,123 @@ async function getOpenSkyToken() {
   }
 }
 
+function updateTrackState(id, a) {
+  trackStateMap.set(id, {
+    latRad: Cesium.Math.toRadians(a.lat),
+    lonRad: Cesium.Math.toRadians(a.lon),
+    altM: Math.max(0, a.altFt * 0.3048),
+    headingRad: Cesium.Math.toRadians(a.heading ?? 0),
+    speedMps: Math.max(0, (a.kts ?? 0) * KTS_TO_MPS),
+    vertMps: (a.vert ?? 0) * FTMIN_TO_MPS,
+    baseTimeSec: Date.now() / 1000,
+  });
+}
+
+function predictTrackState(state) {
+  const nowSec = Date.now() / 1000;
+  const dt = Math.min(MAX_PREDICT_SECONDS, Math.max(0, nowSec - state.baseTimeSec));
+
+  const dist = state.speedMps * dt;
+  if (dist < 0.01) {
+    return {
+      latRad: state.latRad,
+      lonRad: state.lonRad,
+      altM: Math.max(0, state.altM + state.vertMps * dt),
+    };
+  }
+
+  const ad = dist / EARTH_RADIUS_M;
+  const sinLat1 = Math.sin(state.latRad);
+  const cosLat1 = Math.cos(state.latRad);
+  const sinAd = Math.sin(ad);
+  const cosAd = Math.cos(ad);
+  const sinBrg = Math.sin(state.headingRad);
+  const cosBrg = Math.cos(state.headingRad);
+
+  const latRad = Math.asin(sinLat1 * cosAd + cosLat1 * sinAd * cosBrg);
+  const lonRad = state.lonRad + Math.atan2(
+    sinBrg * sinAd * cosLat1,
+    cosAd - sinLat1 * Math.sin(latRad)
+  );
+
+  return {
+    latRad,
+    lonRad: Cesium.Math.zeroToTwoPi(lonRad),
+    altM: Math.max(0, state.altM + state.vertMps * dt),
+  };
+}
+
+function getTrackPositionProperty(id) {
+  if (trackPosPropMap.has(id)) return trackPosPropMap.get(id);
+  const scratch = new Cesium.Cartesian3();
+  const prop = new Cesium.CallbackPositionProperty((time, result) => {
+    const state = trackStateMap.get(id);
+    if (!state) return result ?? scratch;
+    const p = predictTrackState(state);
+    return Cesium.Cartesian3.fromRadians(p.lonRad, p.latRad, p.altM, undefined, result ?? scratch);
+  }, false);
+  trackPosPropMap.set(id, prop);
+  return prop;
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 function renderAircraft(viewer, aircraft) {
+  const setProp = (bag, key, value) => {
+    const p = bag?.[key];
+    if (p?.setValue) p.setValue(value);
+    else if (bag) bag[key] = value;
+  };
+
   const seen = new Set();
 
   for (const a of aircraft) {
     if (!a.id) continue;
     seen.add(a.id);
+    updateTrackState(a.id, a);
 
     const altMetres = a.altFt * 0.3048;
     const color     = aircraftColor(a);
     const shape     = getShape(a);
     const icon      = buildSvgUri(shape, color);
+    const iconSizePx = ICON_SIZE_PX[shape] ?? ICON_SIZE_PX.generic;
     const cesColor  = Cesium.Color.fromCssColorString(color);
 
     if (entityMap.has(a.id)) {
       const entity = entityMap.get(a.id);
-      entity.position = new Cesium.ConstantPositionProperty(
-        Cesium.Cartesian3.fromDegrees(a.lon, a.lat, altMetres)
-      );
+      entity.position = getTrackPositionProperty(a.id);
       if (entity.billboard) {
-        entity.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-a.heading));
         entity.billboard.image    = new Cesium.ConstantProperty(icon);
-        entity.billboard.color    = new Cesium.ConstantProperty(Cesium.Color.WHITE); // color is baked into SVG
+        entity.billboard.width    = new Cesium.ConstantProperty(iconSizePx);
+        entity.billboard.height   = new Cesium.ConstantProperty(iconSizePx);
+        entity.billboard.rotation = new Cesium.ConstantProperty(iconRotationFromHeading(a.heading));
       }
       // Update stored props for HUD
       if (entity.properties) {
-        entity.properties.altFt    = a.altFt;
-        entity.properties.kts      = a.kts;
-        entity.properties.heading  = a.heading;
-        entity.properties.squawk   = a.squawk;
-        entity.properties.dbFlags  = a.dbFlags;
-        entity.properties.vert     = a.vert;
-        entity.properties.category = a.category;
-        entity.properties.typecode = a.typecode;
+        setProp(entity.properties, 'callsign', a.callsign);
+        setProp(entity.properties, 'altFt', a.altFt);
+        setProp(entity.properties, 'kts', a.kts);
+        setProp(entity.properties, 'heading', a.heading);
+        setProp(entity.properties, 'squawk', a.squawk);
+        setProp(entity.properties, 'dbFlags', a.dbFlags);
+        setProp(entity.properties, 'vert', a.vert);
+        setProp(entity.properties, 'category', a.category);
+        setProp(entity.properties, 'typecode', a.typecode);
       }
     } else {
       const entity = viewer.entities.add({
         id:       `flight-${a.id}`,
-        position: Cesium.Cartesian3.fromDegrees(a.lon, a.lat, altMetres),
+        position: getTrackPositionProperty(a.id),
         billboard: {
           image:                    icon,
-          width:                    36,
-          height:                   36,
-          rotation:                 Cesium.Math.toRadians(-a.heading),
+          width:                    iconSizePx,
+          height:                   iconSizePx,
+          rotation:                 iconRotationFromHeading(a.heading),
           alignedAxis:              Cesium.Cartesian3.UNIT_Z,
-          scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.8, 8e6, 0.7),
+          scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.6, 8e6, 0.65),
           color:                    Cesium.Color.WHITE,
           disableDepthTestDistance: 5e6,
+          show:                     enabled && !hideAllFlatIcons,
         },
         label: {
           text:                     a.callsign || a.id.toUpperCase(),
@@ -578,6 +929,7 @@ function renderAircraft(viewer, aircraft) {
           scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.0, 3e6, 0),
           translucencyByDistance:   new Cesium.NearFarScalar(1e3, 1.0, 2e6, 0),
           disableDepthTestDistance: 5e6,
+          show:                     enabled && !hideAllFlatIcons,
         },
         properties: {
           type:     'flight',
@@ -603,6 +955,8 @@ function renderAircraft(viewer, aircraft) {
     if (!seen.has(id)) {
       viewer.entities.remove(entity);
       entityMap.delete(id);
+      trackStateMap.delete(id);
+      trackPosPropMap.delete(id);
     }
   }
 

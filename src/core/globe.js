@@ -69,6 +69,37 @@ function applySceneSettings(viewer) {
   scene.globe.enableLighting           = false;
   scene.globe.depthTestAgainstTerrain  = true;
   scene.postProcessStages.fxaa.enabled = true;
+
+  // ── Google Earth-style camera controls ───────────────────────────────────
+  const ctrl = viewer.scene.screenSpaceCameraController;
+
+  // Left-drag = pan (translate across the surface) — Google Earth default
+  ctrl.tiltEventTypes = [
+    Cesium.CameraEventType.RIGHT_DRAG,           // right-drag = tilt/orbit
+    { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL },
+  ];
+  ctrl.rotateEventTypes = [
+    Cesium.CameraEventType.LEFT_DRAG,
+  ];
+  ctrl.translateEventTypes = [
+    Cesium.CameraEventType.MIDDLE_DRAG,
+  ];
+  ctrl.zoomEventTypes = [
+    Cesium.CameraEventType.WHEEL,                // scroll = zoom
+    Cesium.CameraEventType.PINCH,                // pinch = zoom
+    { eventType: Cesium.CameraEventType.RIGHT_DRAG, modifier: Cesium.KeyboardEventModifier.SHIFT },
+  ];
+  ctrl.lookEventTypes = [
+    { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.SHIFT },
+  ];
+
+  // Feel tuning — snappier zoom, smoother pan inertia
+  ctrl.inertiaSpin          = 0.5;
+  ctrl.inertiaTranslate     = 0.75;
+  ctrl.inertiaZoom          = 0.2;
+  ctrl.minimumZoomDistance  = 100;    // don't go below 100 m
+  ctrl.maximumZoomDistance  = 2.0e7; // don't zoom out past ~20 000 km
+  ctrl.enableCollisionDetection = true;
 }
 
 

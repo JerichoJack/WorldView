@@ -8,10 +8,18 @@
  */
 
 import * as Cesium from 'cesium';
+import { followEntity, stopFollow, isFollowing, followingLabel } from '../core/follow.js';
+import { setFollowMode } from '../layers/flights.js';
 
 export function initHUD(viewer) {
   drawReticle(viewer);
   initEntityPicker(viewer);
+
+  // When follow is cancelled externally (user pans), update the panel button
+  window.addEventListener('worldview:unfollow', () => {
+    const btn = document.getElementById('follow-btn');
+    if (btn) setFollowBtnState(btn, false);
+  });
 }
 
 // ── Targeting reticle ─────────────────────────────────────────────────────────
@@ -103,20 +111,27 @@ function initEntityPicker(viewer) {
       const vert     = props.vert?.getValue()   ?? 0;
       const dbFlags  = props.dbFlags?.getValue()  ?? 0;
       const provider = (props.provider?.getValue() ?? 'adsb').toUpperCase();
+      // Live type code from ADS-B feed (e.g. "B38M") — available immediately, no lookup needed
+      const liveTypecode = (props.typecode?.getValue() ?? '').toUpperCase() || null;
 
-      // Show a loading state immediately
+      // Show a loading state immediately, pre-filled with live ADS-B data we already have
       panel.style.display = 'block';
-      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, loading: true });
+      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags,
+        typecode: liveTypecode, loading: true }, viewer, entity);
 
       // Fetch enrichment in background
       const info = await fetchAircraftInfo(icao.toLowerCase(), callsign);
-      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, ...info });
+      // Keep live typecode if enrichment didn't return one
+      if (!info.typecode && liveTypecode) info.typecode = liveTypecode;
+      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, ...info }, viewer, entity);
 
     } else if (type === 'satellite') {
       const name     = props.name?.getValue() ?? entity.id;
       const provider = (props.provider?.getValue() ?? 'celestrak').toUpperCase();
       panel.style.display = 'block';
       panel.innerHTML = satelliteHtml(name, provider);
+      wireFollowButton(panel, viewer, entity, name, 'satellite');
+      wirePanelClose(panel);
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 }
@@ -143,12 +158,15 @@ async function fetchAircraftInfo(icao, callsign) {
         const d = await r.json();
         const a = d.response?.aircraft;
         if (a) {
-          // type_code = ICAO designator (e.g. "A320"), type = manufacturer name
+          // type_code = ICAO designator (e.g. "B38M"), manufacturer + type_longname = full name
           info.typecode     = a.type_code ?? null;
-          // Build a clean description: "A320 · Airbus A320-200"
           const mfr  = a.manufacturer  ?? '';
           const long = a.type_longname ?? '';
-          info.typeDesc     = [info.typecode, [mfr, long].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || null;
+          // e.g. "B38M · Boeing 737 MAX 8"
+          const fullName = [mfr, long].filter(Boolean).join(' ');
+          info.typeDesc = (info.typecode && fullName)
+            ? `${info.typecode} · ${fullName}`
+            : (fullName || info.typecode || null);
           info.registration = a.registration ?? null;
           info.operator     = a.registered_owner ?? null;
           info.country      = a.registered_owner_country_iso_name ?? null;
@@ -165,7 +183,13 @@ async function fetchAircraftInfo(icao, callsign) {
           const d = await r.json();
           info.registration = d.Registration    ?? null;
           if (!info.typecode)  info.typecode  = d.ICAOTypeCode ?? null;
-          if (!info.typeDesc)  info.typeDesc   = d.Type ?? null;
+          // Build typeDesc from hexdb fields if not already set
+          const hexType = d.Type ?? null;
+          if (!info.typeDesc && hexType) {
+            info.typeDesc = (info.typecode && hexType !== info.typecode)
+              ? `${info.typecode} · ${hexType}`
+              : hexType;
+          }
           if (!info.operator)  info.operator   = d.RegisteredOwners ?? null;
           if (!info.country)   info.country    = d.Country ?? null;
         }
@@ -207,7 +231,7 @@ async function fetchAircraftInfo(icao, callsign) {
 
 // ── Panel renderer ────────────────────────────────────────────────────────────
 
-function renderPanel(panel, data) {
+function renderPanel(panel, data, viewer, entity) {
   const {
     icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags,
     registration, typecode, typeDesc, operator, route, country, year, loading
@@ -220,6 +244,9 @@ function renderPanel(panel, data) {
   const vsStr      = vert   ? `${vert > 0 ? '↑' : '↓'} ${Math.abs(Math.round(vert)).toLocaleString()} ft/min` : 'level';
   const acColor    = aircraftClassColor(dbFlags, callsign);
   const acLabel    = aircraftClassLabel(dbFlags, callsign);
+  const typeDisplay = typecode
+    ? (typeDesc && typeDesc !== typecode ? `${typecode} · ${typeDesc}` : typecode)
+    : typeDesc;
 
   const row = (label, val, dim = false) => val
     ? `<tr><td style="opacity:0.5;padding-right:12px;white-space:nowrap">${label}</td><td style="${dim?'opacity:0.65':''}font-weight:500">${val}</td></tr>`
@@ -249,10 +276,10 @@ function renderPanel(panel, data) {
       ${loading ? `<div style="opacity:0.45;font-size:10px;margin-bottom:8px">Fetching aircraft data...</div>` : ''}
 
       <table style="width:100%;border-collapse:collapse;font-size:11px">
-        ${row('Type',     typeDesc ?? typecode)}
+        ${row('Type',     typeDisplay)}
         ${row('Operator', operator)}
         ${row('Country',  country)}
-        ${row('Route',    route)}
+        ${row('Filed Route', route)}
         ${row('Year',     year)}
       </table>
 
@@ -271,19 +298,88 @@ function renderPanel(panel, data) {
 
       <div style="margin:10px 0;border-top:1px solid rgba(0,255,136,0.1)"></div>
 
-      <div style="display:flex;gap:8px;font-size:10px">
+      <div style="display:flex;gap:8px;font-size:10px;align-items:center">
         <a href="${adsbLolLink}" target="_blank" style="color:#00ff88;opacity:0.7;text-decoration:none">
           ↗ adsb.lol
         </a>
         ${fr24Link ? `<a href="${fr24Link}" target="_blank" style="color:#00ff88;opacity:0.7;text-decoration:none">↗ FlightRadar24</a>` : ''}
         <span style="margin-left:auto;opacity:0.3;font-size:9px">LIVE · ${provider}</span>
       </div>
+
+      <div style="margin-top:10px">
+        <button id="follow-btn" style="
+          width:100%;padding:6px 0;border-radius:3px;cursor:pointer;
+          font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.1em;
+          border:1px solid ${acColor}66;background:transparent;color:${acColor}bb;
+          transition:all 0.15s ease;
+        ">◎ FOLLOW</button>
+      </div>
     </div>
   `;
 
+  wirePanelClose(panel);
+  wireFollowButton(panel, viewer, entity, callsign, 'flight');
+}
+
+// ── Shared panel helpers ──────────────────────────────────────────────────────
+
+function wirePanelClose(panel) {
   document.getElementById('panel-close')?.addEventListener('click', () => {
+    stopFollow();
     panel.style.display = 'none';
   });
+}
+
+function wireFollowButton(panel, viewer, entity, label, type) {
+  const btn = document.getElementById('follow-btn');
+  if (!btn) return;
+
+  // Extract the raw icao hex from entity id (strip 'flight-' prefix)
+  const icaoHex = type === 'flight'
+    ? String(entity.id).replace(/^flight-/, '')
+    : null;
+
+  // Reflect current follow state on open
+  const alreadyFollowing = isFollowing() && followingLabel() === label;
+  setFollowBtnState(btn, alreadyFollowing);
+
+  btn.addEventListener('click', () => {
+    if (isFollowing() && followingLabel() === label) {
+      // ── UNFOLLOW ──────────────────────────────────────────────────────────
+      if (icaoHex) setFollowMode(icaoHex, false);
+      stopFollow(false, true);
+      setFollowBtnState(btn, false);
+    } else {
+      // ── FOLLOW ────────────────────────────────────────────────────────────
+      if (icaoHex) setFollowMode(icaoHex, true);
+
+      followEntity(viewer, entity, {
+        label,
+        type,
+        onStop: () => {
+          // Called if follow is cancelled by user panning away
+          if (icaoHex) setFollowMode(icaoHex, false);
+          const b = document.getElementById('follow-btn');
+          if (b) setFollowBtnState(b, false);
+        },
+      });
+      setFollowBtnState(btn, true);
+    }
+  });
+}
+
+function setFollowBtnState(btn, active) {
+  if (active) {
+    btn.textContent    = '⊙ UNFOLLOW';
+    btn.style.background  = 'rgba(255,80,80,0.12)';
+    btn.style.color       = '#ff6060';
+    btn.style.borderColor = '#ff606066';
+  } else {
+    btn.textContent    = '◎ FOLLOW';
+    btn.style.background  = 'transparent';
+    btn.style.color       = '#00ff8899';
+    btn.style.borderColor = '#00ff8844';
+  }
 }
 
 function satelliteHtml(name, provider) {
@@ -295,9 +391,17 @@ function satelliteHtml(name, provider) {
         <div style="margin-left:auto;cursor:pointer;opacity:0.5" id="panel-close">✕</div>
       </div>
     </div>
-    <div style="padding:12px 16px;opacity:0.6;font-size:11px">
-      Orbital tracking active<br>
-      <span style="opacity:0.5;font-size:9px">TLE · ${provider}</span>
+    <div style="padding:12px 16px;font-size:11px">
+      <div style="opacity:0.6;margin-bottom:10px">
+        Orbital tracking active<br>
+        <span style="opacity:0.5;font-size:9px">TLE · ${provider}</span>
+      </div>
+      <button id="follow-btn" style="
+        width:100%;padding:6px 0;border-radius:3px;cursor:pointer;
+        font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.1em;
+        border:1px solid #00aaff44;background:transparent;color:#00aaffbb;
+        transition:all 0.15s ease;
+      ">◎ FOLLOW</button>
     </div>
   `;
 }

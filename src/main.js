@@ -9,6 +9,7 @@ import { initFlights } from './layers/flights.js';
 import { initSatellites } from './layers/satellites.js';
 import { initControls } from './ui/Controls.js';
 import { initHUD } from './ui/HUD.js';
+import { initCitySearch } from './ui/citySearch.js';
 import { startClock } from './ui/clock.js';
 
 // ── Boot sequence ──────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ async function boot() {
   setProgress(steps[4].pct, steps[4].label);
   initControls(viewer, { flights, satellites });
   initHUD(viewer);
+  initCitySearch(viewer);
   startClock();
 
   // Step 6 – Done — hide loading screen
