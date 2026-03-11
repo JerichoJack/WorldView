@@ -14,9 +14,9 @@ All of it running in a browser tab. No classified clearances required.
 - **Satellite Orbital Tracking** — 200 satellites rendered on actual orbital paths using real TLE data via SGP4 propagation; click any to inspect
 - **Visual Shader Modes** — NVG (night vision), FLIR thermal, CRT scan lines, and anime cel-shading via WebGL post-process stages
 - **IP Geolocation Startup** — camera opens at your approximate location on launch (falls back to configurable env defaults)
-- **Tactical HUD** — corner brackets, UTC clock, live entity counter, coordinate readout, and layer/shader controls
+- **Tactical HUD** — corner brackets, UTC clock, live entity counter, coordinate readout, place search, and layer/shader controls
 - **Street-Level Traffic** — vehicle flow particle system *(Phase 5 — stub, not yet implemented)*
-- **CCTV Integration** — public camera feeds projected onto 3D buildings *(Phase 6 — stub, not yet implemented)*
+- **CCTV Integration** — tile-streamed global public camera markers with live snapshot/video inspection panels
 - **4D Timeline / Replay** — scrub through archived snapshots of all data layers *(Phase 7 — stub, not yet implemented)*
 
 ---
@@ -33,6 +33,8 @@ All of it running in a browser tab. No classified clearances required.
 | Aircraft Classification | ADS-B `dbFlags` + ICAO hex ranges + callsign pattern matching |
 | Satellite Orbital Math | [satellite.js](https://github.com/shashwatak/satellite-js) (SGP4 propagation) |
 | Satellite TLE Data | CelesTrak / Space-Track / N2YO *(switchable)* |
+| CCTV Playback | [hls.js](https://github.com/video-dev/hls.js/) for browser HLS playback |
+| CCTV Data Pipeline | `server/collectors/collectCameras.mjs` + tiled camera manifests in `public/camera-data` |
 | IP Geolocation | ipapi.co (free, no key) |
 | Build Tool | [Vite](https://vitejs.dev/) with `vite-plugin-static-copy` |
 
@@ -44,7 +46,7 @@ Set `VITE_MAP_PROVIDER` in your `.env` to switch instantly — no code changes r
 
 | Provider | Visual Quality | Cost | Credit Card? | Notes |
 |---|---|---|---|---|
-| `cesium` | ⭐⭐ Terrain + Bing satellite + OSM buildings | 100% free | ❌ No | **Recommended default, but currently unreachable** |
+| `cesium` | ⭐⭐ Terrain + Bing satellite + OSM buildings | 100% free | ❌ No | **Recommended default** |
 | `google` | ⭐⭐⭐ Photogrammetric city models | Free tier ($200/mo credit) | ✅ Required | Best possible visuals; falls back to `cesium` if key is missing |
 | `maptiler` | ⭐⭐ Quantized-mesh terrain + satellite | 100% free tier | ❌ No | Falls back to `cesium` if key is missing |
 
@@ -73,7 +75,7 @@ Set `VITE_SATELLITE_PROVIDER` in your `.env` to switch.
 
 | Provider | Objects | Cost | Account / Key? | Notes |
 |---|---|---|---|---|
-| `celestrak` | 20,000+ | Free | ❌ None required | **Recommended default**; uses GP TLE endpoint; transitioning to OMM format for catalog numbers > 69,999 (~July 2026) |
+| `celestrak` | 20,000+ | Free | ❌ None required | **Recommended default when site is working**; uses GP TLE endpoint; transitioning to OMM format for catalog numbers > 69,999 (~July 2026) |
 | `spacetrack` | Full catalog | Free | ✅ Free account (login) | Authoritative US Space Force data (18th Space Defense Squadron) |
 | `n2yo` | Targeted queries | Free tier (1k req/hr) | ✅ Free API key | Better for per-satellite lookups |
 
@@ -194,6 +196,12 @@ If `VITE_FLIGHT_PROVIDER` is unset (or set to `proxy`), the app fetches flight d
 
 The proxy runs on port `3001` and handles viewport-aware hub fetching from `opendata.adsb.fi`, with per-hub caching (12s TTL) and a stale aircraft cleanup (2 min). It is not required if you use the `airplaneslive`, `adsbool`, or `opensky` providers directly.
 
+Run it with:
+
+```bash
+npm run proxy
+```
+
 ---
 
 ## 📁 Project Structure
@@ -201,7 +209,9 @@ The proxy runs on port `3001` and handles viewport-aware hub fetching from `open
 ```
 WorldView/
 ├── server/
-│   └── proxy.mjs             # Node.js flight data proxy (viewport-aware hub fetching)
+│   ├── proxy.mjs             # Node.js flight data proxy (viewport-aware hub fetching)
+│   └── collectors/
+│       └── collectCameras.mjs # Pulls/normalizes public camera feeds + builds camera tiles/manifest
 ├── src/
 │   ├── main.js               # Boot sequence — wires globe, layers, and UI
 │   ├── core/
@@ -211,7 +221,7 @@ WorldView/
 │   │   ├── flights.js        # Flight provider switcher + aircraft silhouette rendering
 │   │   ├── satellites.js     # Satellite provider switcher + SGP4 orbital propagation
 │   │   ├── traffic.js        # OSM road network + particle system (Phase 5 — stub)
-│   │   └── cctv.js           # CCTV feeds projected onto buildings (Phase 6 — stub)
+│   │   └── cctv.js           # Global tiled CCTV markers + live snapshot/video inspect panel
 │   ├── ui/
 │   │   ├── HUD.js            # Coordinate readout + click-to-inspect panel
 │   │   ├── Controls.js       # Layer toggles + shader mode buttons + GLSL shaders
@@ -219,6 +229,7 @@ WorldView/
 │   └── archive/
 │       └── collector.js      # Node.js cron: polls APIs, writes snapshots (Phase 7 — stub)
 ├── public/
+│   ├── camera-data/          # Tiled CCTV datasets + manifest (served as static assets)
 │   └── favicon.svg
 ├── index.html                # App shell + HUD markup + CSS (self-contained)
 ├── .env.example
@@ -236,9 +247,9 @@ WorldView/
 - ✅ Phase 2 — Aircraft silhouette rendering (7 distinct shapes by type code + ADS-B category)
 - ✅ Phase 2 — Military/commercial/other classification with color coding
 - ✅ Phase 3 — Satellite orbital tracking with SGP4 propagation + click-to-inspect
-- ⬜ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
+- ✅ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
 - ⬜ Phase 5 — Street traffic particle system (OSM)
-- ⬜ Phase 6 — CCTV feed projection onto 3D buildings
+- ✅ Phase 6 — CCTV tiled camera layer + live snapshot/video inspection panel
 - ⬜ Phase 7 — 4D timeline + data archival / replay
 
 ---
