@@ -12,6 +12,9 @@ import { followEntity, stopFollow, isFollowing, followingLabel } from '../core/f
 import { setFollowMode, setFlightGlow, hasAssetModel } from '../layers/flights.js';
 import { CITIES, flyTo } from '../core/camera.js';
 
+const DEV_MODE = ((import.meta.env.VITE_DEVELOPER_MODE ?? import.meta.env.VITE_DEV_MODE ?? 'false').toLowerCase() === 'true');
+const SERVER_HEAVY_MODE = ((import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true');
+
 function combineSubsystemStatus() {
   const status = window.__shadowgridSubsystemStatus ?? {};
   const flights    = status.flights;
@@ -70,6 +73,10 @@ export function initHUD(viewer) {
   drawReticle(viewer);
   initEntityPicker(viewer);
 
+  if (DEV_MODE && SERVER_HEAVY_MODE) {
+    initHeavyDiagnosticsPanel();
+  }
+
   // Global system-status bus so any layer can update the bottom status panel.
   window.addEventListener('shadowgrid:system-status', (ev) => {
     const detail = ev?.detail ?? {};
@@ -99,6 +106,77 @@ export function initHUD(viewer) {
     const btn = document.getElementById('follow-btn');
     if (btn) setFollowBtnState(btn, false);
   });
+}
+
+function initHeavyDiagnosticsPanel() {
+  const panel = document.createElement('div');
+  panel.id = 'hud-heavy-diagnostics';
+  panel.style.cssText = `
+    position: fixed;
+    top: 48px;
+    right: 14px;
+    z-index: 11;
+    pointer-events: none;
+    background: rgba(4,10,18,0.88);
+    border: 1px solid rgba(0,255,136,0.26);
+    border-right: 2px solid rgba(0,255,136,0.55);
+    padding: 8px 10px;
+    min-width: 280px;
+    backdrop-filter: blur(8px);
+    font-family: 'Share Tech Mono', 'Courier New', monospace;
+    font-size: 10px;
+    line-height: 1.55;
+    color: #d9ffe8;
+  `;
+  panel.innerHTML = `
+    <div style="color:rgba(0,255,136,0.7);font-size:9px;letter-spacing:0.14em;margin-bottom:5px">DEV · HEAVY DIAGNOSTICS</div>
+    <div id="hud-heavy-diag-body" style="color:#d9ffe8">Waiting for snapshot…</div>
+  `;
+  document.body.appendChild(panel);
+
+  function fmtAge(ms) {
+    if (!Number.isFinite(ms)) return '—';
+    if (ms < 1000) return `${Math.max(ms, 0).toFixed(0)} ms`;
+    return `${(ms / 1000).toFixed(1)} s`;
+  }
+
+  function cacheText(v) {
+    if (v === true) return '<span style="color:#ffaa00">hit</span>';
+    if (v === false) return '<span style="color:#00ff88">miss</span>';
+    return '<span style="color:rgba(255,255,255,0.4)">—</span>';
+  }
+
+  function render(detail) {
+    const body = document.getElementById('hud-heavy-diag-body');
+    if (!body) return;
+    const include = Array.isArray(detail?.include) && detail.include.length
+      ? detail.include.join(', ')
+      : 'none';
+
+    const providers = detail?.providers ?? {};
+    const ages = detail?.snapshotAgesMs ?? {};
+    const cache = detail?.cache ?? {};
+    const err = detail?.error;
+
+    body.innerHTML = `
+      <div>Mode: <span style="color:rgba(0,255,136,0.9)">${detail?.mode ?? 'unknown'}</span></div>
+      <div>Include: <span style="color:rgba(0,255,136,0.9)">${include}</span></div>
+      <div style="margin-top:4px;border-top:1px solid rgba(0,255,136,0.12);padding-top:4px">
+        <div>Flights: <span style="color:#fff">${providers.flights ?? '—'}</span> · age ${fmtAge(ages.flights)} · cache ${cacheText(cache.flights)}</div>
+        <div>Sats: <span style="color:#fff">${providers.satellites ?? '—'}</span> · age ${fmtAge(ages.satellites)} · cache ${cacheText(cache.satellites)}</div>
+        <div>Traffic: <span style="color:#fff">${providers.traffic ?? '—'}</span> · age ${fmtAge(ages.traffic)} · cache ${cacheText(cache.traffic)}</div>
+        <div>CCTV: <span style="color:#fff">${providers.cameras ?? '—'}</span> · age ${fmtAge(ages.cameras)} · cache ${cacheText(cache.cameras)}</div>
+      </div>
+      ${err ? `<div style="margin-top:4px;color:#ff7f7f">Err: ${String(err).slice(0, 110)}</div>` : ''}
+    `;
+  }
+
+  window.addEventListener('shadowgrid:heavy-diagnostics', (ev) => {
+    render(ev?.detail ?? null);
+  });
+
+  const cached = window.__shadowgridHeavyDiagnostics;
+  if (cached) render(cached);
 }
 
 /**

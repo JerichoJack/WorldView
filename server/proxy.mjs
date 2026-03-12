@@ -55,16 +55,230 @@ const DOTENV_VARS = loadDotEnvVars();
 const GOOGLE_ROUTES_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || DOTENV_VARS.get('VITE_GOOGLE_MAPS_API_KEY') || '';
 const BACKEND_FLIGHT_PROVIDER = (process.env.VITE_FLIGHT_PROVIDER || DOTENV_VARS.get('VITE_FLIGHT_PROVIDER') || 'proxy').toLowerCase();
 const BACKEND_SATELLITE_PROVIDER = (process.env.VITE_SATELLITE_PROVIDER || DOTENV_VARS.get('VITE_SATELLITE_PROVIDER') || 'celestrak').toLowerCase();
+const BACKEND_TRAFFIC_PROVIDER = (process.env.VITE_TRAFFIC_PROVIDER || DOTENV_VARS.get('VITE_TRAFFIC_PROVIDER') || 'auto').toLowerCase();
+const OPENSKY_CLIENT_ID = process.env.VITE_OPENSKY_CLIENT_ID || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_ID') || '';
+const OPENSKY_CLIENT_SECRET = process.env.VITE_OPENSKY_CLIENT_SECRET || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_SECRET') || '';
 const SPACETRACK_USER = process.env.VITE_SPACETRACK_USERNAME || DOTENV_VARS.get('VITE_SPACETRACK_USERNAME') || '';
 const SPACETRACK_PASS = process.env.VITE_SPACETRACK_PASSWORD || DOTENV_VARS.get('VITE_SPACETRACK_PASSWORD') || '';
+const N2YO_KEY = process.env.VITE_N2YO_API_KEY || DOTENV_VARS.get('VITE_N2YO_API_KEY') || '';
 
 // ── Satellite snapshot cache (server-side propagation mode) ─────────────────
 const SAT_CATALOG_TTL_MS = 10 * 60_000;
 const SAT_SNAPSHOT_POLL_TIMEOUT_MS = 8000;
+const SAT_SNAPSHOT_TTL_MS = 5_000;
+const TRAFFIC_SNAPSHOT_TTL_MS = 45_000;
+const FLIGHT_SNAPSHOT_TTL_MS = SERVER_HEAVY_MODE ? 3_000 : 1_500;
+const CAMERA_MANIFEST_TTL_MS = 10 * 60_000;
+const CAMERA_TILE_CACHE_TTL_MS = 15 * 60_000;
+const CAMERA_SNAPSHOT_TTL_MS = 8_000;
+const SNAPSHOT_BOUNDS_GRID_DEG = 0.25;
+const CAMERA_MAX_POINTS = Math.max(parseInt(process.env.SHADOWGRID_CAMERA_MAX_POINTS ?? '6000', 10) || 6000, 1);
+const CACHE_DIR = path.resolve(process.cwd(), 'server', 'cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'world-snapshot-cache.json');
 let satCatalogTs = 0;
 /** @type {Array<{id:string,name:string,satrec:any}>} */
 let satCatalog = [];
 let satCatalogSource = 'unknown';
+let satSnapshotCache = { ts: 0, points: [], source: 'unknown', maxCount: 0 };
+let openSkyToken = '';
+let openSkyTokenExp = 0;
+
+const N2YO_SNAPSHOT_TTL_MS = 120_000;
+const N2YO_SAMPLE_POINTS = [
+  { lat: 0, lon: 0 },
+  { lat: 0, lon: 90 },
+  { lat: 0, lon: -90 },
+  { lat: 45, lon: 0 },
+  { lat: -45, lon: 0 },
+  { lat: 45, lon: 120 },
+  { lat: -45, lon: -120 },
+  { lat: 60, lon: 60 },
+  { lat: -60, lon: -60 },
+];
+
+/** @type {Map<string, {ts:number, payload:any}>} */
+const flightSnapshotCache = new Map();
+/** @type {Map<string, {ts:number, payload:any}>} */
+const trafficSnapshotCache = new Map();
+
+/** @type {{ts:number, tileDeg:number, tiles:Array<{key:string,lat:number,lng:number,count:number}>}} */
+let cameraManifestCache = { ts: 0, tileDeg: 5, tiles: [] };
+/** @type {Map<string, {ts:number, cameras:Array<any>}>} */
+const cameraTileCache = new Map();
+/** @type {Map<string, {ts:number, payload:any}>} */
+const cameraSnapshotCache = new Map();
+
+let cacheWriteTimer = null;
+
+function ensureCacheDir() {
+  if (!fs.existsSync(CACHE_DIR)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+  }
+}
+
+function scheduleCacheWrite() {
+  if (cacheWriteTimer) return;
+  cacheWriteTimer = setTimeout(() => {
+    cacheWriteTimer = null;
+    try {
+      ensureCacheDir();
+      const out = {
+        ts: Date.now(),
+        flights: [...flightSnapshotCache.entries()].slice(0, 64),
+        traffic: [...trafficSnapshotCache.entries()].slice(0, 64),
+        satellites: satSnapshotCache,
+      };
+      fs.writeFileSync(CACHE_FILE, JSON.stringify(out));
+    } catch (err) {
+      console.warn(`[proxy] Cache write failed: ${err?.message ?? 'unknown'}`);
+    }
+  }, 400);
+}
+
+function loadSnapshotCacheFromDisk() {
+  try {
+    if (!fs.existsSync(CACHE_FILE)) return;
+    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    for (const [key, value] of data.flights ?? []) {
+      if (value?.payload && Number.isFinite(value?.ts)) {
+        flightSnapshotCache.set(key, value);
+      }
+    }
+    for (const [key, value] of data.traffic ?? []) {
+      if (value?.payload && Number.isFinite(value?.ts)) {
+        trafficSnapshotCache.set(key, value);
+      }
+    }
+    if (data?.satellites?.payload && Number.isFinite(data?.satellites?.ts)) {
+      satSnapshotCache = data.satellites;
+    } else if (data?.satellites?.points && Number.isFinite(data?.satellites?.ts)) {
+      satSnapshotCache = data.satellites;
+    }
+  } catch (err) {
+    console.warn(`[proxy] Cache load failed: ${err?.message ?? 'unknown'}`);
+  }
+}
+
+function quantize(value, step = SNAPSHOT_BOUNDS_GRID_DEG) {
+  return Math.round(value / step) * step;
+}
+
+function normalizeBounds(bounds) {
+  if (!Array.isArray(bounds) || bounds.length !== 4) return null;
+  const [minLonRaw, minLatRaw, maxLonRaw, maxLatRaw] = bounds.map(Number);
+  if (![minLonRaw, minLatRaw, maxLonRaw, maxLatRaw].every(Number.isFinite)) return null;
+  const minLon = Math.max(-180, Math.min(180, minLonRaw));
+  const maxLon = Math.max(-180, Math.min(180, maxLonRaw));
+  const minLat = Math.max(-90, Math.min(90, minLatRaw));
+  const maxLat = Math.max(-90, Math.min(90, maxLatRaw));
+  return [Math.min(minLon, maxLon), Math.min(minLat, maxLat), Math.max(minLon, maxLon), Math.max(minLat, maxLat)];
+}
+
+function boundsCacheKey(bounds, fallback = 'global') {
+  const b = normalizeBounds(bounds);
+  if (!b) return fallback;
+  const [minLon, minLat, maxLon, maxLat] = b;
+  return `${quantize(minLon).toFixed(2)},${quantize(minLat).toFixed(2)},${quantize(maxLon).toFixed(2)},${quantize(maxLat).toFixed(2)}`;
+}
+
+async function ensureCameraManifest() {
+  const now = Date.now();
+  if (cameraManifestCache.tiles.length && (now - cameraManifestCache.ts) < CAMERA_MANIFEST_TTL_MS) return;
+
+  const manifestPath = path.resolve(process.cwd(), 'public', 'camera-data', 'tiles-manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    cameraManifestCache = { ts: now, tileDeg: 5, tiles: [] };
+    return;
+  }
+
+  const raw = fs.readFileSync(manifestPath, 'utf8');
+  const data = JSON.parse(raw);
+  const tileDeg = Number.isFinite(data?.tileDeg) ? data.tileDeg : 5;
+  const tiles = Array.isArray(data?.tiles)
+    ? data.tiles.filter(t => Number.isFinite(t?.lat) && Number.isFinite(t?.lng) && t.lat >= -90 && t.lat <= 90 && t.lng >= -180 && t.lng <= 180 && typeof t.key === 'string')
+    : [];
+
+  cameraManifestCache = {
+    ts: now,
+    tileDeg,
+    tiles,
+  };
+}
+
+async function readCameraTile(tileKey) {
+  const now = Date.now();
+  const cached = cameraTileCache.get(tileKey);
+  if (cached && (now - cached.ts) < CAMERA_TILE_CACHE_TTL_MS) return cached.cameras;
+
+  const tilePath = path.resolve(process.cwd(), 'public', 'camera-data', 'tiles', `${tileKey}.json`);
+  if (!fs.existsSync(tilePath)) {
+    cameraTileCache.set(tileKey, { ts: now, cameras: [] });
+    return [];
+  }
+
+  try {
+    const raw = fs.readFileSync(tilePath, 'utf8');
+    const data = JSON.parse(raw);
+    const cameras = Array.isArray(data) ? data : [];
+    cameraTileCache.set(tileKey, { ts: now, cameras });
+    return cameras;
+  } catch {
+    cameraTileCache.set(tileKey, { ts: now, cameras: [] });
+    return [];
+  }
+}
+
+async function getCameraSnapshot(bounds, maxPoints = CAMERA_MAX_POINTS) {
+  await ensureCameraManifest();
+  const b = normalizeBounds(bounds);
+  if (!b) {
+    return { cameras: [], total: 0, source: 'camera-tiles', mode: 'bounds-required', cacheHit: false, ts: Date.now() };
+  }
+
+  const cacheKey = `cam:${boundsCacheKey(b)}:${maxPoints}`;
+  const now = Date.now();
+  const cached = cameraSnapshotCache.get(cacheKey);
+  if (cached && (now - cached.ts) < CAMERA_SNAPSHOT_TTL_MS) {
+    return { ...cached.payload, cacheHit: true };
+  }
+
+  const [minLon, minLat, maxLon, maxLat] = b;
+  const tileDeg = cameraManifestCache.tileDeg;
+  const tiles = cameraManifestCache.tiles.filter(t => {
+    const tileMaxLat = t.lat + tileDeg;
+    const tileMaxLon = t.lng + tileDeg;
+    if (tileMaxLat < minLat || t.lat > maxLat) return false;
+    if (tileMaxLon < minLon || t.lng > maxLon) return false;
+    return true;
+  });
+
+  const cameras = [];
+  for (const tile of tiles) {
+    const tileCameras = await readCameraTile(tile.key);
+    for (const cam of tileCameras) {
+      if (!Number.isFinite(cam?.a) || !Number.isFinite(cam?.o)) continue;
+      if (cam.a < minLat || cam.a > maxLat || cam.o < minLon || cam.o > maxLon) continue;
+      cameras.push(cam);
+      if (cameras.length >= maxPoints) break;
+    }
+    if (cameras.length >= maxPoints) break;
+  }
+
+  const generatedAt = Date.now();
+  const payload = {
+    cameras,
+    total: cameras.length,
+    source: 'camera-tiles',
+    tileCount: tiles.length,
+    cacheHit: false,
+    ts: generatedAt,
+  };
+
+  cameraSnapshotCache.set(cacheKey, { ts: generatedAt, payload });
+  scheduleCacheWrite();
+  return payload;
+}
 
 // ── Hub grid — mathematically tiled at 250nm radius with ~30% overlap ─────────
 // Generated by: lat step = RADIUS_DEG * 1.4, lon step = lat_step / cos(lat)
@@ -119,23 +333,36 @@ function boundsToQueryCenter(bounds) {
 }
 
 async function fetchReadsbProvider(baseUrl, bounds, globalMode = false) {
-  // In global mode (server-heavy, no-limit stress test) use the /v2/all endpoint.
-  let url;
+  const urls = [];
   if (globalMode) {
-    url = `${baseUrl}/v2/all`;
+    urls.push(`${baseUrl}/v2/all`);
   } else {
     const center = boundsToQueryCenter(bounds);
     if (center) {
-      url = `${baseUrl}/v2/lat/${center.lat.toFixed(4)}/lon/${center.lon.toFixed(4)}/dist/${center.distNm}`;
+      urls.push(`${baseUrl}/v2/lat/${center.lat.toFixed(4)}/lon/${center.lon.toFixed(4)}/dist/${center.distNm}`);
+      urls.push(`${baseUrl}/v2/point/${center.lat.toFixed(4)}/${center.lon.toFixed(4)}/${center.distNm}`);
     } else {
-      url = `${baseUrl}/v2/point/0/0/250`;
+      urls.push(`${baseUrl}/v2/point/0/0/250`);
     }
   }
 
-  const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(20_000) });
-  if (!resp.ok) throw new Error(`${baseUrl} ${resp.status}`);
-  const data = await resp.json();
-  upsert(data.aircraft ?? data.ac ?? []);
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(20_000) });
+      if (!resp.ok) {
+        lastError = new Error(`${baseUrl} ${resp.status}`);
+        continue;
+      }
+      const data = await resp.json();
+      upsert(data.aircraft ?? data.ac ?? []);
+      return true;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError ?? new Error(`${baseUrl} unavailable`);
 }
 
 function toRad(d) { return d * Math.PI / 180; }
@@ -188,6 +415,161 @@ function trafficFlowFromSpeed(speed) {
     case 'SLOW': return { density: 6, speed: 8.5, priority: 3 };
     default: return { density: 3, speed: 15, priority: 2 };
   }
+}
+
+function osmRoadClass(tags = {}) {
+  const highway = tags.highway || '';
+  if (['motorway', 'trunk', 'primary'].includes(highway)) {
+    return { density: 12, speed: 25, priority: 3 };
+  }
+  if (['secondary', 'tertiary'].includes(highway)) {
+    return { density: 6, speed: 15, priority: 2 };
+  }
+  if (['residential', 'unclassified', 'living_street'].includes(highway)) {
+    return { density: 2, speed: 10, priority: 1 };
+  }
+  return { density: 1, speed: 8, priority: 0 };
+}
+
+function resolveTrafficBackendMode() {
+  const hasGoogleKey = GOOGLE_ROUTES_KEY.trim().length > 0;
+  if (BACKEND_TRAFFIC_PROVIDER === 'google') return hasGoogleKey ? 'google-live' : 'osm-sim';
+  if (BACKEND_TRAFFIC_PROVIDER === 'osm') return 'osm-sim';
+  return hasGoogleKey ? 'google-live' : 'osm-sim';
+}
+
+async function buildOsmTrafficRoads(minLon, minLat, maxLon, maxLat) {
+  const query = `
+    [out:json];
+    (
+      way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street"](${minLat},${minLon},${maxLat},${maxLon});
+    );
+    out geom;
+  `;
+
+  const resp = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain', ...HEADERS },
+    body: query,
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) throw new Error(`Overpass ${resp.status}`);
+
+  const data = await resp.json();
+  const roads = [];
+  for (const way of (data.elements ?? []).filter(el => el.type === 'way')) {
+    if (!way.tags?.highway || !Array.isArray(way.geometry) || way.geometry.length < 2) continue;
+    const profile = osmRoadClass(way.tags);
+    const coords = way.geometry.map(node => ({ lat: node.lat, lon: node.lon }));
+    roads.push({
+      id: `osm-${way.id}`,
+      name: way.tags.name || '[unnamed]',
+      coords,
+      density: profile.density,
+      speed: profile.speed,
+      priority: profile.priority,
+      totalLength: coords.reduce((sum, _, idx) => {
+        if (idx === 0) return sum;
+        const prev = coords[idx - 1];
+        const curr = coords[idx];
+        return sum + gcDistanceMeters(prev.lat, prev.lon, curr.lat, curr.lon);
+      }, 0),
+    });
+  }
+
+  return roads;
+}
+
+async function getOpenSkyTokenServer() {
+  if (!OPENSKY_CLIENT_ID || !OPENSKY_CLIENT_SECRET) return '';
+  if (openSkyToken && Date.now() < openSkyTokenExp) return openSkyToken;
+
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: OPENSKY_CLIENT_ID,
+    client_secret: OPENSKY_CLIENT_SECRET,
+  });
+
+  const resp = await fetch('https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!resp.ok) throw new Error(`OpenSky token ${resp.status}`);
+
+  const data = await resp.json();
+  openSkyToken = data.access_token ?? '';
+  openSkyTokenExp = Date.now() + Math.max(((data.expires_in ?? 3600) - 60) * 1000, 60_000);
+  return openSkyToken;
+}
+
+async function fetchOpenSkyProvider() {
+  const token = await getOpenSkyTokenServer();
+  const headers = token ? { Authorization: `Bearer ${token}`, ...HEADERS } : HEADERS;
+  const resp = await fetch('https://opensky-network.org/api/states/all', {
+    headers,
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) throw new Error(`OpenSky ${resp.status}`);
+
+  const data = await resp.json();
+  const aircraft = (data.states ?? [])
+    .filter(s => Number.isFinite(s?.[5]) && Number.isFinite(s?.[6]) && s?.[8] !== true)
+    .map(s => ({
+      hex: (s[0] ?? '').trim().toLowerCase(),
+      flight: (s[1] ?? '').trim(),
+      lon: s[5],
+      lat: s[6],
+      alt_baro: Number.isFinite(s[7]) ? s[7] * 3.281 : 10000,
+      gs: Number.isFinite(s[9]) ? s[9] * 1.944 : 0,
+      track: Number.isFinite(s[10]) ? s[10] : 0,
+      baro_rate: Number.isFinite(s[11]) ? s[11] * 196.85 : 0,
+      squawk: s[14] ?? '',
+      category: '',
+      t: '',
+      dbFlags: 0,
+    }));
+
+  upsert(aircraft);
+}
+
+async function fetchN2yoSnapshot(maxCount = Infinity) {
+  if (!N2YO_KEY) {
+    throw new Error('N2YO API key missing');
+  }
+
+  const points = [];
+  const seen = new Set();
+  const limit = Number.isFinite(maxCount) ? maxCount : Infinity;
+
+  for (const sample of N2YO_SAMPLE_POINTS) {
+    const url = `https://api.n2yo.com/rest/v1/satellite/above/${sample.lat}/${sample.lon}/0/90/0/&apiKey=${N2YO_KEY}`;
+    const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15_000) });
+    if (!resp.ok) throw new Error(`N2YO ${resp.status}`);
+    const data = await resp.json();
+    for (const sat of data.above ?? []) {
+      const satId = String(sat.satid ?? sat.satid ?? sat.satname ?? `${sat.satlat}_${sat.satlng}`);
+      if (seen.has(satId)) continue;
+      const lat = Number(sat.satlat);
+      const lon = Number(sat.satlng);
+      const altKm = Number(sat.satalt);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(altKm)) continue;
+      seen.add(satId);
+      points.push({
+        id: satId,
+        name: sat.satname ?? `N2YO ${satId}`,
+        lat,
+        lon,
+        altM: altKm * 1000,
+      });
+      if (points.length >= limit) {
+        return points;
+      }
+    }
+  }
+
+  return points;
 }
 
 function googleRoutePairsForBounds(minLon, minLat, maxLon, maxLat) {
@@ -367,7 +749,8 @@ async function ensureSatelliteCatalog(maxCount = 3000) {
         await loadFromSpaceTrack();
         break;
       case 'n2yo':
-        // N2YO has no practical bulk TLE feed for this snapshot mode.
+        // Browser-direct N2YO is targeted queries only; server snapshot mode
+        // uses direct position sampling instead of TLE propagation.
         await loadFromCelesTrak();
         break;
       case 'celestrak':
@@ -403,6 +786,72 @@ function satelliteSnapshot(maxCount = 2000) {
     });
   }
   return points;
+}
+
+async function getSatellitesSnapshotPayload(maxCount = Infinity) {
+  const now = Date.now();
+  const requestMax = Number.isFinite(maxCount) ? maxCount : Infinity;
+  const snapshotTtl = BACKEND_SATELLITE_PROVIDER === 'n2yo' ? N2YO_SNAPSHOT_TTL_MS : SAT_SNAPSHOT_TTL_MS;
+  if (satSnapshotCache.points.length && satSnapshotCache.source === BACKEND_SATELLITE_PROVIDER && (now - satSnapshotCache.ts) < snapshotTtl && satSnapshotCache.maxCount >= requestMax) {
+    const points = Number.isFinite(requestMax)
+      ? satSnapshotCache.points.slice(0, requestMax)
+      : satSnapshotCache.points;
+    return { points, total: points.length, ts: satSnapshotCache.ts, source: `server-propagated:${satSnapshotCache.source}`, cacheHit: true };
+  }
+
+  const computeMax = Number.isFinite(requestMax) ? requestMax : 99_999;
+  let points;
+  let source;
+  if (BACKEND_SATELLITE_PROVIDER === 'n2yo') {
+    points = await fetchN2yoSnapshot(computeMax);
+    source = 'n2yo';
+  } else {
+    await ensureSatelliteCatalog(computeMax);
+    points = satelliteSnapshot(computeMax);
+    source = satCatalogSource;
+  }
+  const generatedAt = Date.now();
+  satSnapshotCache = {
+    ts: generatedAt,
+    points,
+    source,
+    maxCount: computeMax,
+  };
+  scheduleCacheWrite();
+  return { points: Number.isFinite(requestMax) ? points.slice(0, requestMax) : points, total: Number.isFinite(requestMax) ? Math.min(points.length, requestMax) : points.length, ts: generatedAt, source: `server-propagated:${source}`, cacheHit: false };
+}
+
+async function getTrafficPayload(bounds) {
+  const b = normalizeBounds(bounds);
+  if (!b) {
+    return { roads: [], total: 0, ts: Date.now(), source: 'traffic-server', mode: 'bounds-required' };
+  }
+
+  const backendMode = resolveTrafficBackendMode();
+  const cacheKey = `${backendMode}:${boundsCacheKey(b, 'traffic-global')}`;
+  const cached = trafficSnapshotCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && (now - cached.ts) < TRAFFIC_SNAPSHOT_TTL_MS) {
+    return { ...cached.payload, cacheHit: true };
+  }
+
+  const [minLon, minLat, maxLon, maxLat] = b;
+  const roads = backendMode === 'google-live'
+    ? await buildGoogleTrafficRoads(minLon, minLat, maxLon, maxLat)
+    : await buildOsmTrafficRoads(minLon, minLat, maxLon, maxLat);
+  const generatedAt = Date.now();
+  const payload = {
+    roads,
+    total: roads.length,
+    ts: generatedAt,
+    source: backendMode === 'google-live' ? 'google-routes-server' : 'osm-overpass-server',
+    mode: backendMode,
+    cacheKey,
+    cacheHit: false,
+  };
+  trafficSnapshotCache.set(cacheKey, { ts: generatedAt, payload });
+  scheduleCacheWrite();
+  return payload;
 }
 
 // ── Aircraft database ─────────────────────────────────────────────────────────
@@ -496,14 +945,22 @@ async function fetchHub(hub) {
 
 // ── Request handler ───────────────────────────────────────────────────────────
 
-async function handleFlights(query, res) {
+async function getFlightsPayload(query = {}) {
   let hubs = [];
+  let flightSource = BACKEND_FLIGHT_PROVIDER;
   const requestHeavy = query.mode === 'heavy' || SERVER_HEAVY_MODE;
   const viewportBufferDeg = requestHeavy ? 3 : 1;
   const parts = (query.bounds ?? '').split(',').map(Number);
-  const bounds = (parts.length === 4 && parts.every(n => Number.isFinite(n))) ? parts : null;
+  const bounds = (parts.length === 4 && parts.every(n => Number.isFinite(n))) ? normalizeBounds(parts) : null;
+  const cacheKey = `${requestHeavy ? 'heavy' : 'normal'}:${boundsCacheKey(bounds)}:${BACKEND_FLIGHT_PROVIDER}`;
+  const cached = flightSnapshotCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < FLIGHT_SNAPSHOT_TTL_MS) {
+    return { ...cached.payload, cacheHit: true };
+  }
 
   // Use configured backend provider where available; keep proxy hub mode as fallback.
+  let shouldUseHubGridFallback = BACKEND_FLIGHT_PROVIDER === 'proxy';
+
   if (BACKEND_FLIGHT_PROVIDER === 'airplaneslive' || BACKEND_FLIGHT_PROVIDER === 'adsbool') {
     try {
       const base = BACKEND_FLIGHT_PROVIDER === 'airplaneslive'
@@ -513,10 +970,22 @@ async function handleFlights(query, res) {
       await fetchReadsbProvider(base, bounds, requestHeavy);
     } catch (err) {
       console.warn(`[proxy] ${BACKEND_FLIGHT_PROVIDER} backend fetch failed, falling back to hub grid: ${err?.message ?? 'unknown'}`);
+      shouldUseHubGridFallback = true;
+      flightSource = `${BACKEND_FLIGHT_PROVIDER}:fallback-hub-grid`;
     }
   }
 
-  if (BACKEND_FLIGHT_PROVIDER === 'proxy' || BACKEND_FLIGHT_PROVIDER === 'opensky') {
+  if (BACKEND_FLIGHT_PROVIDER === 'opensky') {
+    try {
+      await fetchOpenSkyProvider();
+    } catch (err) {
+      console.warn(`[proxy] OpenSky backend fetch failed, falling back to hub grid: ${err?.message ?? 'unknown'}`);
+      shouldUseHubGridFallback = true;
+      flightSource = 'opensky:fallback-hub-grid';
+    }
+  }
+
+  if (shouldUseHubGridFallback) {
     // In heavy mode fetch ALL hubs globally; otherwise only viewport hubs
     if (requestHeavy) {
       hubs = ALL_HUBS;
@@ -545,10 +1014,18 @@ async function handleFlights(query, res) {
     );
   }
 
-  console.log(`[proxy] flights=${BACKEND_FLIGHT_PROVIDER} ${hubs.length} hubs queried → ${aircraft.length} aircraft in viewport${requestHeavy ? ' (heavy)' : ''}`);
+  console.log(`[proxy] flights=${flightSource} ${hubs.length} hubs queried → ${aircraft.length} aircraft in viewport${requestHeavy ? ' (heavy)' : ''}`);
 
+  const payload = { aircraft, total: aircraft.length, ts: Date.now(), source: flightSource, cacheKey, cacheHit: false };
+  flightSnapshotCache.set(cacheKey, { ts: Date.now(), payload });
+  scheduleCacheWrite();
+  return payload;
+}
+
+async function handleFlights(query, res) {
+  const payload = await getFlightsPayload(query);
   res.writeHead(200);
-  res.end(JSON.stringify({ aircraft, total: aircraft.length, ts: Date.now(), source: BACKEND_FLIGHT_PROVIDER }));
+  res.end(JSON.stringify(payload));
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
@@ -573,10 +1050,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const [minLon, minLat, maxLon, maxLat] = parts;
-      const roads = await buildGoogleTrafficRoads(minLon, minLat, maxLon, maxLat);
+      const payload = await getTrafficPayload(parts);
       res.writeHead(200);
-      res.end(JSON.stringify({ roads, total: roads.length, ts: Date.now(), source: 'google-routes-server' }));
+      res.end(JSON.stringify(payload));
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'traffic request failed' }));
@@ -586,17 +1062,102 @@ const server = http.createServer(async (req, res) => {
     // 0 or missing → no limit (full catalog); otherwise honour the requested count
     const maxCount = rawMax > 0 ? rawMax : Infinity;
     try {
-      await ensureSatelliteCatalog(maxCount);
-      const points = satelliteSnapshot(maxCount);
+      const payload = await getSatellitesSnapshotPayload(maxCount);
       res.writeHead(200);
-      res.end(JSON.stringify({ points, total: points.length, ts: Date.now(), source: `server-propagated:${satCatalogSource}` }));
+      res.end(JSON.stringify(payload));
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'satellite snapshot failed' }));
     }
+  } else if (url === '/api/cameras/snapshot') {
+    const parts = (query.bounds ?? '').split(',').map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isFinite(n))) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'bounds must be minLon,minLat,maxLon,maxLat' }));
+      return;
+    }
+    const maxCount = Math.max(parseInt(query.max ?? `${CAMERA_MAX_POINTS}`, 10) || CAMERA_MAX_POINTS, 1);
+    try {
+      const payload = await getCameraSnapshot(parts, maxCount);
+      res.writeHead(200);
+      res.end(JSON.stringify(payload));
+    } catch (err) {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: err?.message ?? 'camera snapshot failed' }));
+    }
+  } else if (url === '/api/world/snapshot') {
+    const parts = (query.bounds ?? '').split(',').map(Number);
+    const bounds = (parts.length === 4 && parts.every(n => Number.isFinite(n))) ? parts : null;
+    const include = new Set((query.include ?? 'flights,satellites,traffic,cameras').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+    const maxSat = Math.max(parseInt(query.satMax ?? '0', 10) || 0, 0) || Infinity;
+    const maxCam = Math.max(parseInt(query.camMax ?? `${CAMERA_MAX_POINTS}`, 10) || CAMERA_MAX_POINTS, 1);
+
+    try {
+      const payload = { ts: Date.now(), mode: SERVER_HEAVY_MODE ? 'heavy' : 'normal' };
+      const flightsPromise = include.has('flights')
+        ? getFlightsPayload({
+          bounds: bounds ? bounds.join(',') : '',
+          mode: 'heavy',
+        })
+        : null;
+      const satellitesPromise = include.has('satellites')
+        ? getSatellitesSnapshotPayload(maxSat)
+        : null;
+      const trafficPromise = (include.has('traffic') && bounds)
+        ? getTrafficPayload(bounds)
+        : null;
+      const camerasPromise = (include.has('cameras') && bounds)
+        ? getCameraSnapshot(bounds, maxCam)
+        : null;
+
+      const [flightsPayload, satellitesPayload, trafficPayload, camerasPayload] = await Promise.all([
+        flightsPromise,
+        satellitesPromise,
+        trafficPromise,
+        camerasPromise,
+      ]);
+
+      if (flightsPayload) payload.flights = flightsPayload;
+      if (satellitesPayload) payload.satellites = satellitesPayload;
+      if (trafficPayload) payload.traffic = trafficPayload;
+      if (camerasPayload) payload.cameras = camerasPayload;
+
+      payload.diagnostics = {
+        providers: {
+          flights: payload.flights?.source ?? null,
+          satellites: payload.satellites?.source ?? null,
+          traffic: payload.traffic?.source ?? null,
+          cameras: payload.cameras?.source ?? null,
+        },
+        cache: {
+          flights: payload.flights?.cacheHit ?? null,
+          satellites: payload.satellites?.cacheHit ?? null,
+          traffic: payload.traffic?.cacheHit ?? null,
+          cameras: payload.cameras?.cacheHit ?? null,
+        },
+      };
+
+      res.writeHead(200);
+      res.end(JSON.stringify(payload));
+    } catch (err) {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: err?.message ?? 'world snapshot failed' }));
+    }
   } else if (url === '/health') {
     res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', db: db.size, hubs: ALL_HUBS.length, hub_cache: hubCache.size }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      db: db.size,
+      hubs: ALL_HUBS.length,
+      hub_cache: hubCache.size,
+      cache: {
+        flights: flightSnapshotCache.size,
+        traffic: trafficSnapshotCache.size,
+        sat_points: satSnapshotCache.points?.length ?? 0,
+        camera_tiles: cameraTileCache.size,
+        camera_snapshots: cameraSnapshotCache.size,
+      },
+    }));
   } else {
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'Not found' }));
@@ -604,6 +1165,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  loadSnapshotCacheFromDisk();
   console.log(`[proxy] Mode: ${SERVER_HEAVY_MODE ? 'heavy' : 'normal'}`);
   console.log(`[proxy] Providers: flights=${BACKEND_FLIGHT_PROVIDER}, satellites=${BACKEND_SATELLITE_PROVIDER}`);
   console.log(`[proxy] ShadowGrid → http://localhost:${PORT}/api/flights?bounds=minLon,minLat,maxLon,maxLat`);

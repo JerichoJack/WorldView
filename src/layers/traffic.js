@@ -5,6 +5,7 @@
  */
 
 import * as Cesium from 'cesium';
+import { setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
 const GOOGLE_ROUTES_API = '/api/google-routes/directions/v2:computeRoutes';
@@ -42,6 +43,7 @@ let lastProfileMinute = -1;
 let trafficMode = 'osm-sim';
 let refreshTimer = null;
 let googleRefreshInFlight = false;
+let lastTrafficSnapshotTs = 0;
 
 /**
  * Haversine distance (meters)
@@ -302,6 +304,33 @@ async function refreshGoogleTrafficForCurrentBbox() {
   } finally {
     googleRefreshInFlight = false;
   }
+}
+
+async function applyServerTrafficSnapshot(snapshot) {
+  if (!enabled) return;
+
+  const roads = snapshot?.roads ?? [];
+  const snapshotTs = Number(snapshot?.ts ?? 0);
+  if (!roads.length) return;
+  if (snapshotTs && snapshotTs === lastTrafficSnapshotTs) return;
+
+  if (trafficMode === 'osm-sim') {
+    refreshTrafficProfile();
+  }
+
+  lastTrafficSnapshotTs = snapshotTs;
+  await attachTerrainHeights(roads);
+  if (currentBbox) {
+    const key = `${currentBbox.west}_${currentBbox.south}_${currentBbox.east}_${currentBbox.north}`;
+    roadNetwork.set(key, { roads, particles: [], ready: true });
+  }
+  spawnParticles(roads);
+
+  if (!animationHandle && particles.length) {
+    animate();
+  }
+
+  console.info(`[Traffic] Server snapshot refresh: ${roads.length} segments`);
 }
 
 function localHourFromLongitude(lon) {
@@ -642,6 +671,19 @@ export async function initTraffic(viewerInstance) {
   trafficMode = resolveTrafficMode();
   console.info(`[Traffic] Mode: ${trafficMode}`);
 
+  if (SERVER_HEAVY_MODE) {
+    subscribeServerSnapshot('traffic', {
+      async onData(payload) {
+        if (!enabled) return;
+        await applyServerTrafficSnapshot(payload?.traffic ?? null);
+      },
+      onError(err) {
+        if (!enabled) return;
+        console.warn('[Traffic] Server snapshot failed:', err?.message ?? 'unknown');
+      },
+    });
+  }
+
   return {
     async setEnabled(val) {
       enabled = val;
@@ -661,7 +703,9 @@ export async function initTraffic(viewerInstance) {
             north: (rectangle.north * 180) / Math.PI
           };
           currentBbox = bbox;
-          if (trafficMode === 'google-live') {
+          if (SERVER_HEAVY_MODE) {
+            setServerSnapshotLayerEnabled('traffic', true);
+          } else if (trafficMode === 'google-live') {
             await refreshGoogleTrafficForCurrentBbox();
             if (!particles.length) {
               console.warn('[Traffic] Falling back to OSM simulation for this viewport');
@@ -669,7 +713,7 @@ export async function initTraffic(viewerInstance) {
             }
           }
 
-          if (trafficMode === 'osm-sim') {
+          if (!SERVER_HEAVY_MODE && trafficMode === 'osm-sim') {
             refreshTrafficProfile();
             const roads = await fetchOSMRoads(bbox);
             if (roads.length > 0) {
@@ -681,7 +725,7 @@ export async function initTraffic(viewerInstance) {
           if (particles.length) animate();
 
           if (refreshTimer) clearInterval(refreshTimer);
-          if (trafficMode === 'google-live') {
+          if (!SERVER_HEAVY_MODE && trafficMode === 'google-live') {
             refreshTimer = setInterval(() => {
               refreshGoogleTrafficForCurrentBbox();
             }, GOOGLE_REFRESH_MS);
@@ -689,6 +733,8 @@ export async function initTraffic(viewerInstance) {
         }
       } else {
         console.info('[Traffic] Layer disabled');
+        setServerSnapshotLayerEnabled('traffic', false);
+        lastTrafficSnapshotTs = 0;
         if (refreshTimer) {
           clearInterval(refreshTimer);
           refreshTimer = null;

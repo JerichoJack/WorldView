@@ -15,10 +15,14 @@
 
 import * as Cesium from 'cesium';
 import Hls from 'hls.js';
+import { requestServerSnapshotRefresh, setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const MANIFEST_URL = '/camera-data/tiles-manifest.json';
 const TILE_BASE    = '/camera-data/tiles';
+const CAMERA_SNAPSHOT_URL = '/api/localproxy/api/cameras/snapshot';
+const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true';
+const SERVER_SNAPSHOT_MAX_CAMERAS = Math.max(parseInt(import.meta.env.VITE_SERVER_CAMERA_MAX_OBJECTS ?? '3000', 10) || 3000, 100);
 const MAX_ALT_M    = 3_000_000;  // 3,000 km — hide above this
 const MAX_TILES    = 24;         // max cached & visible tiles (LRU)
 const THROTTLE_MS  = 400;        // min ms between viewport recalculations
@@ -53,6 +57,7 @@ let _loadingTiles = new Set();  // keys currently fetching
 let _panel        = null;       // DOM click-panel
 let _throttleId   = null;
 let _hlsInstance  = null;       // active hls.js instance — destroyed on panel close
+let _serverCamMap = new Map();  // id -> Cesium.Entity in server-heavy mode
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -318,6 +323,11 @@ function _visibleTileKeys() {
 }
 
 async function _updateTiles() {
+  if (SERVER_HEAVY_MODE) {
+    await _updateTilesServerSnapshot();
+    return;
+  }
+
   const altM   = _viewer.camera.positionCartographic.height;
   const visible = new Set(_visibleTileKeys());
 
@@ -342,6 +352,59 @@ async function _updateTiles() {
   }
 }
 
+async function _updateTilesServerSnapshot() {
+  await requestServerSnapshotRefresh();
+}
+
+function _applyServerSnapshotCameras(cameras) {
+  if (!_enabled) return;
+
+  const altM = _viewer.camera.positionCartographic.height;
+  if (altM > MAX_ALT_M) {
+    _ds.entities.removeAll();
+    _serverCamMap.clear();
+    return;
+  }
+
+  const seen = new Set();
+  for (const cam of cameras) {
+    const camId = String(cam?.i ?? `${cam?.a}_${cam?.o}`);
+    if (!Number.isFinite(cam?.a) || !Number.isFinite(cam?.o)) continue;
+    seen.add(camId);
+
+    const existing = _serverCamMap.get(camId);
+    if (existing) continue;
+
+    const entity = _ds.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(cam.o, cam.a, 0),
+      billboard: {
+        image:                    ICONS[cam.t] ?? ICONS.i,
+        verticalOrigin:           Cesium.VerticalOrigin.CENTER,
+        horizontalOrigin:         Cesium.HorizontalOrigin.CENTER,
+        scale:                    0.85,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      properties: {
+        type:        'cctv',
+        camId:       camId,
+        camLat:      cam.a,
+        camLng:      cam.o,
+        camUrl:      cam.u,
+        camFeedType: cam.t,
+        camSource:   cam.s,
+      },
+    });
+    _serverCamMap.set(camId, entity);
+  }
+
+  for (const [camId, entity] of _serverCamMap.entries()) {
+    if (!seen.has(camId)) {
+      _ds.entities.remove(entity);
+      _serverCamMap.delete(camId);
+    }
+  }
+}
+
 function _onCameraChange() {
   if (!_enabled) return;
   if (_throttleId) return;
@@ -361,16 +424,25 @@ export async function initCCTV(viewer) {
   await viewer.dataSources.add(_ds);
   _ds.show = false;
 
-  // Load manifest (small ~50 KB — once only)
-  try {
-    const res  = await fetch(MANIFEST_URL);
-    if (res.ok) {
-      _manifest = await res.json();
-      for (const t of _manifest.tiles) _manifestMap.set(t.key, t);
-      console.info(`[CCTV] Manifest loaded — ${_manifest.totalCameras.toLocaleString()} cameras in ${_manifest.tiles.length} tiles`);
+  if (!SERVER_HEAVY_MODE) {
+    // Load manifest (small ~50 KB — once only)
+    try {
+      const res  = await fetch(MANIFEST_URL);
+      if (res.ok) {
+        _manifest = await res.json();
+        for (const t of _manifest.tiles) _manifestMap.set(t.key, t);
+        console.info(`[CCTV] Manifest loaded — ${_manifest.totalCameras.toLocaleString()} cameras in ${_manifest.tiles.length} tiles`);
+      }
+    } catch {
+      console.warn('[CCTV] Manifest not found — run `node server/collectors/collectCameras.mjs` to build the database.');
     }
-  } catch {
-    console.warn('[CCTV] Manifest not found — run `node server/collectors/collectCameras.mjs` to build the database.');
+  } else {
+    console.info('[CCTV] Server-heavy mode enabled (snapshot endpoint)');
+    subscribeServerSnapshot('cameras', {
+      onData(payload) {
+        _applyServerSnapshotCameras(payload?.cameras?.cameras ?? []);
+      },
+    });
   }
 
   // Build the click panel DOM early
@@ -410,10 +482,19 @@ export async function initCCTV(viewer) {
       _enabled = !!val;
       _ds.show = _enabled;
       if (_enabled) {
+        if (SERVER_HEAVY_MODE) {
+          setServerSnapshotLayerEnabled('cameras', true);
+        }
         _updateTiles();
       } else {
-        // Despawn all entities; tile cache stays for fast re-enable
-        for (const k of [..._tileCache.keys()]) _despawnTile(k);
+        setServerSnapshotLayerEnabled('cameras', false);
+        if (SERVER_HEAVY_MODE) {
+          _ds.entities.removeAll();
+          _serverCamMap.clear();
+        } else {
+          // Despawn all entities; tile cache stays for fast re-enable
+          for (const k of [..._tileCache.keys()]) _despawnTile(k);
+        }
         if (_panel) _panel.style.display = 'none';
       }
     },

@@ -5,6 +5,7 @@
  */
 
 import * as Cesium from 'cesium';
+import { setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 const PROVIDER = (import.meta.env.VITE_FLIGHT_PROVIDER ?? 'proxy').toLowerCase();
 const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true';
@@ -759,6 +760,76 @@ export async function initFlights(viewer) {
     });
   });
 
+  if (SERVER_HEAVY_MODE) {
+    subscribeServerSnapshot('flights', {
+      onData(payload) {
+        if (!enabled) return;
+
+        try {
+          const aircraft = mapProxyAircraft(payload?.flights?.aircraft ?? []);
+          renderAircraft(viewer, aircraft);
+
+          if (!flightFeedHealthy) {
+            publishSystemStatus('● FLIGHT FEED RECOVERED · SERVER SNAPSHOT', 'ok', 'flights:recovered:server-snapshot');
+          } else if (!hasPublishedFlightOk) {
+            publishSystemStatus('● FLIGHT FEED OK · SERVER SNAPSHOT', 'ok', 'flights:ok:server-snapshot');
+            hasPublishedFlightOk = true;
+          }
+          flightFeedHealthy = true;
+        } catch (err) {
+          console.warn('[Flights] Server snapshot apply failed:', err.message);
+        }
+      },
+      onError(err) {
+        console.warn('[Flights] Server snapshot failed:', err?.message ?? 'unknown');
+        publishSystemStatus(`⚠ FLIGHT FEED ERROR · SERVER SNAPSHOT · ${err?.message ?? 'request failed'}`, 'error', `flights:error:server-snapshot:${err?.message ?? 'unknown'}`);
+        flightFeedHealthy = false;
+      },
+    });
+
+    return {
+      setEnabled(val) {
+        enabled = val;
+        setServerSnapshotLayerEnabled('flights', enabled);
+        entityMap.forEach((e, icaoHex) => {
+          const state = trackStateMap.get(icaoHex);
+          const aircraftType = state?.aircraftType ?? 'generic';
+          const aircraftClassification = state?.aircraftClassification ?? 'other';
+          e.show = shouldShowFlight(aircraftClassification, aircraftType);
+        });
+        applyFlatIconVisibility();
+      },
+      setAircraftClassificationFilter(classification, filterEnabled) {
+        const classKey = (classification ?? 'other').toLowerCase();
+        if (classKey in aircraftClassificationFilters) {
+          aircraftClassificationFilters[classKey] = filterEnabled;
+          entityMap.forEach((e, icaoHex) => {
+            const state = trackStateMap.get(icaoHex);
+            const aircraftType = state?.aircraftType ?? 'generic';
+            const aircraftClassification = state?.aircraftClassification ?? 'other';
+            e.show = shouldShowFlight(aircraftClassification, aircraftType);
+          });
+          applyFlatIconVisibility();
+        }
+      },
+      setAircraftTypeFilter(aircraftType, filterEnabled) {
+        const typeKey = (aircraftType ?? 'generic').toLowerCase();
+        if (typeKey in aircraftTypeFilters) {
+          aircraftTypeFilters[typeKey] = filterEnabled;
+          entityMap.forEach((e, icaoHex) => {
+            const state = trackStateMap.get(icaoHex);
+            const acType = state?.aircraftType ?? 'generic';
+            const acClassification = state?.aircraftClassification ?? 'other';
+            e.show = shouldShowFlight(acClassification, acType);
+          });
+          applyFlatIconVisibility();
+        }
+      },
+      get count()    { return entityMap.size; },
+      get provider() { return ACTIVE_PROVIDER; },
+    };
+  }
+
   await fetchAndRender(viewer);
   setInterval(() => { if (enabled) fetchAndRender(viewer); }, POLL_MS);
 
@@ -1041,11 +1112,6 @@ async function fetchReadsbLike(baseUrl, bounds, providerLabel) {
 // ── Provider: local proxy ─────────────────────────────────────────────────────
 
 async function fetchProxy(bounds) {
-  const numOr = (v, fallback = 0) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : fallback;
-  };
-
   let url = PROXY_URL;
   if (bounds) {
     const { minLon, minLat, maxLon, maxLat } = bounds;
@@ -1057,8 +1123,16 @@ async function fetchProxy(bounds) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Proxy ${resp.status} — is server/proxy.mjs running?`);
   const data = await resp.json();
-  const aircraft = data.aircraft ?? [];
+  const aircraft = mapProxyAircraft(data.aircraft ?? []);
   console.info(`[Flights] ${aircraft.length} aircraft in viewport`);
+  return aircraft;
+}
+
+function mapProxyAircraft(aircraft) {
+  const numOr = (v, fallback = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
 
   return aircraft
     .filter(a => a.lat && a.lon && a.alt_baro !== 'ground' && (a.alt_baro ?? 0) > 100)

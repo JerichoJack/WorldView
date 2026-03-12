@@ -198,6 +198,12 @@ VITE_FLIGHT_PROVIDER=airplaneslive
 VITE_SATELLITE_PROVIDER=celestrak
 ```
 
+Then generate camera database and tiles (for CCTV layer):
+
+```bash
+node server/collectors/collectCameras.mjs
+```
+
 ### Run locally
 
 ```bash
@@ -225,6 +231,28 @@ Run it with:
 ```bash
 npm run proxy
 ```
+
+### Server Heavy Mode (Recommended For Maximum Data)
+
+Heavy mode pushes the expensive aggregation and preprocessing work to the Node proxy so the browser mostly renders already-built snapshots.
+
+Run with:
+
+```bash
+npm run dev -- --host --server
+```
+
+In this mode the proxy now serves cached snapshots for:
+
+- flights (`/api/flights`) with short-lived viewport/global cache keys
+- satellites (`/api/satellites/snapshot`) with propagation snapshot caching
+- traffic (`/api/traffic/google`) with viewport-bucket cache keys
+- cameras (`/api/cameras/snapshot`) from server-side tile cache
+- combined world snapshots (`/api/world/snapshot`) for multi-layer fetches
+
+Heavy mode now supports the env-selected flight, satellite, and traffic providers server-side. Map providers still render directly in the browser because tile and 3D globe rendering remain client-side.
+
+The cache is persisted to `server/cache/world-snapshot-cache.json` so warm data can survive a restart.
 
 ---
 
@@ -271,7 +299,7 @@ ShadowGrid/
 - ✅ Phase 2 — Aircraft silhouette rendering (7 distinct shapes by type code + ADS-B category)
 - ✅ Phase 2 — Military/commercial/other classification with color coding
 - ✅ Phase 3 — Satellite orbital tracking with SGP4 propagation + click-to-inspect
-- ✅ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
+- ⬜ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
 - ✅ Phase 5 — Street traffic system (Google live traffic + OSM fallback)
 - ✅ Phase 6 — CCTV tiled camera layer + live snapshot/video inspection panel
 - ⬜ Phase 7 — 4D timeline + data archival / replay
@@ -335,3 +363,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [N2YO](https://n2yo.com) — satellite tracking API
 - [satellite.js](https://github.com/shashwatak/satellite-js) — SGP4 orbital propagation
 - [ipapi.co](https://ipapi.co) — IP geolocation for startup camera placement
+- [TrafficVision](https://trafficvision.live/) — aggregated global public traffic camera feed data used to build the CCTV layer; built by [Noah Eisenbruch (NERKTEK)](https://trafficvision.live/)

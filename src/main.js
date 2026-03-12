@@ -12,6 +12,7 @@ import { initCCTV } from './layers/cctv.js';
 import { initControls } from './ui/Controls.js';
 import { initHUD, updateHUDCounts } from './ui/HUD.js';
 import { initCitySearch } from './ui/citySearch.js';
+import { registerServerSnapshotViewer } from './core/serverSnapshot.js';
 // startClock removed — HUD.js owns the UTC clock now
 
 // ── Boot sequence ──────────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ async function boot() {
   // Step 1 – Globe
   setProgress(steps[0].pct, steps[0].label);
   const viewer = await initGlobe('cesium-container');
+  registerServerSnapshotViewer(viewer);
 
   // Step 2 – Camera
   setProgress(steps[1].pct, steps[1].label);

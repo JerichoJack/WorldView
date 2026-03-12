@@ -24,6 +24,7 @@
 
 import * as Cesium from 'cesium';
 import * as satellite from 'satellite.js';
+import { setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -312,43 +313,38 @@ async function initSatellitesServerSnapshot(viewer) {
     entities.set(point.id, entity);
   }
 
-  async function refreshSnapshot() {
-    try {
-      const resp = await fetch(`${SATELLITE_SNAPSHOT_URL}?max=${MAX_SATS}`);
-      if (!resp.ok) throw new Error(`snapshot ${resp.status}`);
-      const data = await resp.json();
-      const points = data?.points ?? [];
-
-      const seen = new Set();
-      for (const p of points) {
-        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon) || !Number.isFinite(p.altM)) continue;
-        seen.add(p.id);
-        upsertPoint(p);
-      }
-
-      for (const [id, entity] of entities) {
-        if (!seen.has(id)) {
-          viewer.entities.remove(entity);
-          entities.delete(id);
-        }
-      }
-
-      publishSystemStatus('● SATELLITE FEED OK · SERVER SNAPSHOT', 'ok', 'sat:server-snapshot:ok');
-    } catch (err) {
-      publishSystemStatus(`⚠ SATELLITE SNAPSHOT ERROR · ${err?.message ?? 'request failed'}`, 'error', `sat:server-snapshot:error:${err?.message ?? 'unknown'}`);
+  function applySnapshot(points) {
+    const seen = new Set();
+    for (const p of points) {
+      if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon) || !Number.isFinite(p.altM)) continue;
+      seen.add(p.id);
+      upsertPoint(p);
     }
+
+    for (const [id, entity] of entities) {
+      if (!seen.has(id)) {
+        viewer.entities.remove(entity);
+        entities.delete(id);
+      }
+    }
+
+    publishSystemStatus('● SATELLITE FEED OK · SERVER SNAPSHOT', 'ok', 'sat:server-snapshot:ok');
   }
 
-  setInterval(() => {
-    if (!enabledLocal) return;
-    refreshSnapshot();
-  }, SNAPSHOT_POLL_MS);
-
-  await refreshSnapshot();
+  subscribeServerSnapshot('satellites', {
+    onData(payload) {
+      if (!enabledLocal) return;
+      applySnapshot(payload?.satellites?.points ?? []);
+    },
+    onError(err) {
+      publishSystemStatus(`⚠ SATELLITE SNAPSHOT ERROR · ${err?.message ?? 'request failed'}`, 'error', `sat:server-snapshot:error:${err?.message ?? 'unknown'}`);
+    },
+  });
 
   return {
     setEnabled(val) {
       enabledLocal = val;
+      setServerSnapshotLayerEnabled('satellites', enabledLocal);
       entities.forEach(entity => {
         entity.show = enabledLocal;
       });
