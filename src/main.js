@@ -7,6 +7,7 @@ import { initGlobe } from './core/globe.js';
 import { initCamera } from './core/camera.js';
 import { initFlights } from './layers/flights.js';
 import { initSatellites } from './layers/satellites.js';
+import { initTraffic } from './layers/traffic.js';
 import { initCCTV } from './layers/cctv.js';
 import { initControls } from './ui/Controls.js';
 import { initHUD, updateHUDCounts } from './ui/HUD.js';
@@ -21,7 +22,8 @@ async function boot() {
     { label: 'Loading photorealistic globe…', pct: 30 },
     { label: 'Connecting flight feeds…',      pct: 50 },
     { label: 'Propagating satellite orbits…', pct: 65 },
-    { label: 'Initializing CCTV layer…',      pct: 80 },
+    { label: 'Initializing street traffic…',  pct: 75 },
+    { label: 'Initializing CCTV layer…',      pct: 85 },
     { label: 'Mounting HUD…',                 pct: 92 },
     { label: 'System nominal.',               pct: 100 },
   ];
@@ -52,19 +54,24 @@ async function boot() {
   const satellites = await initSatellites(viewer);
   satellites?.setEnabled(false);  // Start with satellites hidden
 
-  // Step 5 – CCTV
+  // Step 5 – Traffic
   setProgress(steps[4].pct, steps[4].label);
+  const traffic = await initTraffic(viewer);
+  traffic?.setEnabled(false);  // Start with traffic hidden
+
+  // Step 6 – CCTV
+  setProgress(steps[5].pct, steps[5].label);
   const cctv = await initCCTV(viewer);
   cctv?.setEnabled(false);  // Start with CCTV hidden
 
-  // Step 6 – UI
-  setProgress(steps[5].pct, steps[5].label);
-  initControls(viewer, { flights, satellites, cctv });
+  // Step 7 – UI
+  setProgress(steps[6].pct, steps[6].label);
+  initControls(viewer, { flights, satellites, traffic, cctv });
   initHUD(viewer);
   initCitySearch(viewer);
 
-  // Step 7 – Done — hide loading screen
-  setProgress(steps[6].pct, steps[6].label);
+  // Step 8 – Done — hide loading screen
+  setProgress(steps[7].pct, steps[7].label);
   await new Promise(r => setTimeout(r, 600));
   document.getElementById('loading').classList.add('hidden');
 
@@ -73,11 +80,13 @@ async function boot() {
   setInterval(() => {
     const aircraftCount   = flights?.count   ?? 0;
     const satelliteCount  = satellites?.count ?? 0;
+    const trafficCount    = traffic?.count    ?? 0;
     const cctvCount       = cctv?.count       ?? 0;
     const totalObjects    = viewer.entities.values.length;
     updateHUDCounts({
       aircraft:   aircraftCount,
       satellites: satelliteCount,
+      traffic:    trafficCount,
       cctv:       cctvCount,
       objects:    totalObjects,
     });
@@ -87,6 +96,7 @@ async function boot() {
   updateHUDCounts({
     aircraft:   flights?.count   ?? 0,
     satellites: satellites?.count ?? 0,
+    traffic:    traffic?.count    ?? 0,
     cctv:       cctv?.count       ?? 0,
     objects:    viewer.entities.values.length,
   });

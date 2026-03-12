@@ -15,7 +15,7 @@ All of it running in a browser tab. No classified clearances required.
 - **Visual Shader Modes** — NVG (night vision), FLIR thermal, CRT scan lines, and anime cel-shading via WebGL post-process stages
 - **IP Geolocation Startup** — camera opens at your approximate location on launch (falls back to configurable env defaults)
 - **Tactical HUD** — corner brackets, UTC clock, live entity counter, coordinate readout, place search, and layer/shader controls
-- **Street-Level Traffic** — vehicle flow particle system *(Phase 5 — stub, not yet implemented)*
+- **Street-Level Traffic** — live Google traffic-aware flow (Routes API) with automatic OpenStreetMap particle fallback, terrain-aligned to roads
 - **CCTV Integration** — tile-streamed global public camera markers with live snapshot/video inspection panels
 - **4D Timeline / Replay** — scrub through archived snapshots of all data layers *(Phase 7 — stub, not yet implemented)*
 
@@ -33,6 +33,7 @@ All of it running in a browser tab. No classified clearances required.
 | Aircraft Classification | ADS-B `dbFlags` + ICAO hex ranges + callsign pattern matching |
 | Satellite Orbital Math | [satellite.js](https://github.com/shashwatak/satellite-js) (SGP4 propagation) |
 | Satellite TLE Data | CelesTrak / Space-Track / N2YO *(switchable)* |
+| Street Traffic Data | Google Routes API traffic-aware polylines / OpenStreetMap Overpass API *(auto fallback)* |
 | CCTV Playback | [hls.js](https://github.com/video-dev/hls.js/) for browser HLS playback |
 | CCTV Data Pipeline | `server/collectors/collectCameras.mjs` + tiled camera manifests in `public/camera-data` |
 | IP Geolocation | ipapi.co (free, no key) |
@@ -81,6 +82,18 @@ Set `VITE_SATELLITE_PROVIDER` in your `.env` to switch.
 
 ---
 
+## 🚗 Street Traffic Provider Options
+
+Set `VITE_TRAFFIC_PROVIDER` in your `.env` to switch.
+
+| Provider | Source | Cost | Key Required? | Notes |
+|---|---|---|---|---|
+| `auto` | Google Routes API or OSM | Mixed | ✅ If Google path used | **Recommended default**; uses Google live traffic when `VITE_GOOGLE_MAPS_API_KEY` is present, otherwise falls back to OSM simulation |
+| `google` | Google Routes API (`TRAFFIC_ON_POLYLINE`) | Paid usage tier | ✅ Yes | Real-time traffic speed intervals (`NORMAL` / `SLOW` / `TRAFFIC_JAM`) along sampled city routes |
+| `osm` | OpenStreetMap Overpass road geometry | Free | ❌ No | Simulated vehicle flow with local-time density profile + terrain-aligned particles |
+
+---
+
 ## 🔑 API Keys Setup
 
 ### 🌍 Map Providers
@@ -95,9 +108,10 @@ Set `VITE_SATELLITE_PROVIDER` in your `.env` to switch.
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com) and create or select a project
 2. Enable the [Map Tiles API](https://console.cloud.google.com/apis/library/tile.googleapis.com)
-3. Go to **Credentials → Create API Key**, then restrict it to "Map Tiles API"
-4. Enable billing — the $200/mo free credit covers typical development usage
-5. Paste into `VITE_GOOGLE_MAPS_API_KEY`
+3. Enable the [Routes API](https://console.cloud.google.com/apis/library/routes.googleapis.com) *(required for live street traffic)*
+4. Go to **Credentials → Create API Key**, then restrict it to "Map Tiles API" and "Routes API"
+5. Enable billing — the $200/mo free credit covers typical development usage
+6. Paste into `VITE_GOOGLE_MAPS_API_KEY`
 
 **MapTiler** *(only for `VITE_MAP_PROVIDER=maptiler`)*
 
@@ -139,6 +153,16 @@ Rate limits: 4,000 credits/day authenticated; anonymous access is heavily thrott
 1. Request a free API key at [n2yo.com/api](https://www.n2yo.com/api/)
 2. Paste into `VITE_N2YO_API_KEY`
 3. Free tier: 1,000 requests/hour
+
+---
+
+### 🚗 Street Traffic Provider
+
+Set `VITE_TRAFFIC_PROVIDER` to one of:
+
+- `auto` — use Google live traffic when key is available, else OSM fallback
+- `google` — force Google live traffic path
+- `osm` — force OSM simulation only
 
 ---
 
@@ -220,7 +244,7 @@ ShadowGrid/
 │   ├── layers/
 │   │   ├── flights.js        # Flight provider switcher + aircraft silhouette rendering
 │   │   ├── satellites.js     # Satellite provider switcher + SGP4 orbital propagation
-│   │   ├── traffic.js        # OSM road network + particle system (Phase 5 — stub)
+│   │   ├── traffic.js        # Google live traffic flow + OSM fallback particle system (Phase 5)
 │   │   └── cctv.js           # Global tiled CCTV markers + live snapshot/video inspect panel
 │   ├── ui/
 │   │   ├── HUD.js            # Coordinate readout + click-to-inspect panel
@@ -248,7 +272,7 @@ ShadowGrid/
 - ✅ Phase 2 — Military/commercial/other classification with color coding
 - ✅ Phase 3 — Satellite orbital tracking with SGP4 propagation + click-to-inspect
 - ✅ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
-- ⬜ Phase 5 — Street traffic particle system (OSM)
+- ✅ Phase 5 — Street traffic system (Google live traffic + OSM fallback)
 - ✅ Phase 6 — CCTV tiled camera layer + live snapshot/video inspection panel
 - ⬜ Phase 7 — 4D timeline + data archival / replay
 

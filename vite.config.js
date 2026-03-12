@@ -82,6 +82,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite:     path => path.replace(/^\/api\/n2yo/, ''),
       },
+
+      // ── Google Routes API (traffic-aware polylines) ───────────────────────
+      '/api/google-routes': {
+        target:      'https://routes.googleapis.com',
+        changeOrigin: true,
+        rewrite:     path => path.replace(/^\/api\/google-routes/, ''),
+      },
     },
   },
 

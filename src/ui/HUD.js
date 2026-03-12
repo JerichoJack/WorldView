@@ -105,11 +105,13 @@ export function initHUD(viewer) {
  * Update the bottom-centre status panel counts.
  * Call this from flights.js / satellites.js whenever your entity lists change.
  *
- * @param {{ aircraft?: number, satellites?: number, objects?: number }} counts
+ * @param {{ aircraft?: number, satellites?: number, traffic?: number, cctv?: number, objects?: number }} counts
  */
-export function updateHUDCounts({ aircraft, satellites, objects } = {}) {
+export function updateHUDCounts({ aircraft, satellites, traffic, cctv, objects } = {}) {
   if (aircraft   != null) { const el = document.getElementById('hud-count-aircraft');   if (el) el.textContent = aircraft.toLocaleString(); }
   if (satellites != null) { const el = document.getElementById('hud-count-satellites'); if (el) el.textContent = satellites.toLocaleString(); }
+  if (traffic    != null) { const el = document.getElementById('hud-count-traffic');    if (el) el.textContent = traffic.toLocaleString(); }
+  if (cctv       != null) { const el = document.getElementById('hud-count-cctv');       if (el) el.textContent = cctv.toLocaleString(); }
   if (objects    != null) { const el = document.getElementById('hud-count-objects');    if (el) el.textContent = objects.toLocaleString(); }
 }
 
@@ -312,6 +314,10 @@ function drawReticle(viewer) {
         <span style="color:#e8ffe0">✈️ <span id="hud-count-aircraft" style="color:#fff;font-weight:500">0</span></span>
         <span style="color:rgba(255,255,255,0.2)">|</span>
         <span style="color:#e8ffe0">🛰️ <span id="hud-count-satellites" style="color:#fff;font-weight:500">0</span></span>
+        <span style="color:rgba(255,255,255,0.2)">|</span>
+        <span style="color:#e8ffe0">🚗 <span id="hud-count-traffic" style="color:#fff;font-weight:500">0</span></span>
+        <span style="color:rgba(255,255,255,0.2)">|</span>
+        <span style="color:#e8ffe0">📹 <span id="hud-count-cctv" style="color:#fff;font-weight:500">0</span></span>
       </div>
     </div>
   `;
@@ -417,7 +423,12 @@ function drawReticle(viewer) {
       const h = viewer.canvas.clientHeight;
       const centre = new Cesium.Cartesian2(w / 2, h / 2);
       const ray    = viewer.camera.getPickRay(centre);
-      const cart3  = viewer.scene.globe.pick(ray, viewer.scene);
+      let cart3  = viewer.scene.globe.pick(ray, viewer.scene);
+
+      // Fallback when terrain/tiles do not return a globe intersection yet.
+      if (!cart3) {
+        cart3 = viewer.camera.pickEllipsoid(centre, viewer.scene.globe.ellipsoid);
+      }
 
       if (!cart3) return;
       const carto = Cesium.Cartographic.fromCartesian(cart3);
