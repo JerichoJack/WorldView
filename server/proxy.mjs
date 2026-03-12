@@ -53,7 +53,7 @@ function loadDotEnvVars() {
 
 const DOTENV_VARS = loadDotEnvVars();
 const GOOGLE_ROUTES_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || DOTENV_VARS.get('VITE_GOOGLE_MAPS_API_KEY') || '';
-const BACKEND_FLIGHT_PROVIDER = (process.env.VITE_FLIGHT_PROVIDER || DOTENV_VARS.get('VITE_FLIGHT_PROVIDER') || 'proxy').toLowerCase();
+const BACKEND_FLIGHT_PROVIDER = (process.env.VITE_FLIGHT_PROVIDER || DOTENV_VARS.get('VITE_FLIGHT_PROVIDER') || 'opensky').toLowerCase();
 const BACKEND_SATELLITE_PROVIDER = (process.env.VITE_SATELLITE_PROVIDER || DOTENV_VARS.get('VITE_SATELLITE_PROVIDER') || 'celestrak').toLowerCase();
 const BACKEND_TRAFFIC_PROVIDER = (process.env.VITE_TRAFFIC_PROVIDER || DOTENV_VARS.get('VITE_TRAFFIC_PROVIDER') || 'auto').toLowerCase();
 const OPENSKY_CLIENT_ID = process.env.VITE_OPENSKY_CLIENT_ID || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_ID') || '';
@@ -61,6 +61,7 @@ const OPENSKY_CLIENT_SECRET = process.env.VITE_OPENSKY_CLIENT_SECRET || DOTENV_V
 const SPACETRACK_USER = process.env.VITE_SPACETRACK_USERNAME || DOTENV_VARS.get('VITE_SPACETRACK_USERNAME') || '';
 const SPACETRACK_PASS = process.env.VITE_SPACETRACK_PASSWORD || DOTENV_VARS.get('VITE_SPACETRACK_PASSWORD') || '';
 const N2YO_KEY = process.env.VITE_N2YO_API_KEY || DOTENV_VARS.get('VITE_N2YO_API_KEY') || '';
+const SATELLITE_MAX_PER_CATEGORY = Math.max(parseInt(process.env.VITE_SATELLITE_MAX_PER_CATEGORY || DOTENV_VARS.get('VITE_SATELLITE_MAX_PER_CATEGORY') || DOTENV_VARS.get('VITE_SATELLITE_MAX_OBJECTS') || '500', 10) || 500, 1);
 
 // ── Satellite snapshot cache (server-side propagation mode) ─────────────────
 const SAT_CATALOG_TTL_MS = 10 * 60_000;
@@ -76,10 +77,10 @@ const CAMERA_MAX_POINTS = Math.max(parseInt(process.env.SHADOWGRID_CAMERA_MAX_PO
 const CACHE_DIR = path.resolve(process.cwd(), 'server', 'cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'world-snapshot-cache.json');
 let satCatalogTs = 0;
-/** @type {Array<{id:string,name:string,satrec:any}>} */
+/** @type {Array<{id:string,name:string,line1:string,line2:string,satrec:any,meta:any,category:string}>} */
 let satCatalog = [];
 let satCatalogSource = 'unknown';
-let satSnapshotCache = { ts: 0, points: [], source: 'unknown', maxCount: 0 };
+let satSnapshotCache = { ts: 0, points: [], source: 'unknown', maxCount: 0, perCategory: SATELLITE_MAX_PER_CATEGORY, categoryKey: 'all' };
 let openSkyToken = '';
 let openSkyTokenExp = 0;
 
@@ -678,7 +679,84 @@ function parseTLEText(text) {
   return out;
 }
 
-async function ensureSatelliteCatalog(maxCount = 3000) {
+function classifySatelliteMilitaryStatus(upperName) {
+  const military = [
+    'NROL', 'NRO', 'USAF', 'USA-', 'USSF', 'AFSPC', 'COSMOS', 'YAOGAN', 'MILITARY', 'DEFENSE',
+    'DSP', 'SBIRS', 'WARNING', 'EARLY WARN', 'KH-11', 'KH-9', 'KH-8', 'KEYHOLE', 'ORION',
+    'IMPROVED CRYSTAL', 'LACROSSE', 'RAINBOW', 'VORTEX', 'JUMPSEAT', 'MILSTAR', 'SKYNET',
+    'PYRAMIDS', 'FLTSAT', 'DSCS', 'AFSAT', 'AFTS-', 'NAVY', 'SSN-', 'FLTSATCOM', 'UFO-',
+    'ZIYUAN', 'HUANJING', 'KOPEK', 'CYKLOP', 'KVANT', 'PROGNOZ', 'HEXAGON', 'GAMBIT',
+    'TALENT', 'SIGINT', 'COMINT', 'ELINT', 'RECONNAISSANCE', 'RECONNAISSANCE IMAGERY',
+    'NATIONAL SECURITY',
+  ];
+  return military.some(k => upperName.includes(k));
+}
+
+function classifySatelliteApplication(upperName) {
+  const astronomical = ['HUBBLE', 'JWST', 'JAMES WEBB', 'CHANDRA', 'XMM', 'FERMI', 'TESS', 'KEPLER', 'GAIA', 'EUCLID', 'ASTRO'];
+  if (astronomical.some(k => upperName.includes(k))) return 'Astronomical';
+
+  const navigation = ['GPS', 'NAVSTAR', 'GLONASS', 'GALILEO', 'BEIDOU', 'QZSS', 'IRNSS', 'NAVIC', 'EGNOS', 'WAAS'];
+  if (navigation.some(k => upperName.includes(k))) return 'Navigation';
+
+  const earthObservation = ['LANDSAT', 'SENTINEL', 'TERRA', 'AQUA', 'NOAA', 'METEOR', 'HIMAWARI', 'GOES', 'RADARSAT', 'PLEIADES', 'WORLDVIEW', 'SPOT', 'SUOMI', 'NPP'];
+  if (earthObservation.some(k => upperName.includes(k))) return 'Earth Observation';
+
+  const communication = ['STARLINK', 'ONEWEB', 'IRIDIUM', 'GLOBALSTAR', 'INTELSAT', 'EUTELSAT', 'INMARSAT', 'TELSTAR', 'ASTRA', 'O3B', 'TDRS', 'SKYNET', 'SATCOM'];
+  if (communication.some(k => upperName.includes(k))) return 'Communication';
+
+  return 'Unknown';
+}
+
+function classifySatelliteCrewedStatus(upperName) {
+  const crewed = ['ISS', 'ZARYA', 'TIANGONG', 'CSS', 'CREW DRAGON', 'STARLINER', 'SOYUZ', 'SHENZHOU'];
+  return crewed.some(k => upperName.includes(k)) ? 'Crewed' : 'Uncrewed';
+}
+
+function classifySatelliteOrbitType(line2 = '') {
+  const l2 = String(line2).padEnd(69, ' ');
+  const inclinationDeg = Number.parseFloat(l2.slice(8, 16).trim());
+  const eccRaw = l2.slice(26, 33).trim();
+  const eccentricity = Number.parseFloat(`0.${eccRaw}`);
+  const meanMotionRevDay = Number.parseFloat(l2.slice(52, 63).trim());
+
+  if (!Number.isFinite(meanMotionRevDay) || meanMotionRevDay <= 0) return 'Unknown';
+
+  const periodMinutes = 1440 / meanMotionRevDay;
+  const nearGeoPeriod = Math.abs(periodMinutes - 1436) < 40;
+  const lowInclination = Number.isFinite(inclinationDeg) ? inclinationDeg < 20 : false;
+  const lowEccentricity = Number.isFinite(eccentricity) ? eccentricity < 0.02 : true;
+
+  if (nearGeoPeriod && lowInclination && lowEccentricity) return 'GEO';
+  if (periodMinutes < 128) return 'LEO';
+  if (periodMinutes < 600) return 'MEO';
+  const highEccentricity = Number.isFinite(eccentricity) ? eccentricity > 0.25 : false;
+  if (highEccentricity || periodMinutes >= 600) return 'HEO';
+  return 'Unknown';
+}
+
+function deriveSatelliteMeta(name, line2) {
+  const upperName = String(name ?? '').toUpperCase();
+  return {
+    isMilitary: classifySatelliteMilitaryStatus(upperName),
+    application: classifySatelliteApplication(upperName),
+    crewedStatus: classifySatelliteCrewedStatus(upperName),
+    orbitType: classifySatelliteOrbitType(line2),
+  };
+}
+
+function categoryForSatelliteMeta(meta) {
+  if (meta?.isMilitary) return 'military';
+  if ((meta?.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+  const app = (meta?.application ?? 'unknown').toLowerCase();
+  if (app === 'earth observation') return 'earthobservation';
+  if (app === 'communication') return 'communication';
+  if (app === 'navigation') return 'navigation';
+  if (app === 'astronomical') return 'astronomical';
+  return 'unknown';
+}
+
+async function ensureSatelliteCatalog() {
   const now = Date.now();
   if (satCatalog.length && (now - satCatalogTs) < SAT_CATALOG_TTL_MS) return;
 
@@ -688,12 +766,18 @@ async function ensureSatelliteCatalog(maxCount = 3000) {
     if (!resp.ok) throw new Error(`CelesTrak ${resp.status}`);
     const text = await resp.text();
     const parsed = parseTLEText(text);
-    const tle = Number.isFinite(maxCount) ? parsed.slice(0, maxCount) : parsed;
-    satCatalog = tle.map((t, idx) => ({
+    satCatalog = parsed.map((t, idx) => {
+      const meta = deriveSatelliteMeta(t.name, t.line2);
+      return {
       id: `${idx}:${t.name}`,
       name: t.name,
+      line1: t.line1,
+      line2: t.line2,
       satrec: satellite.twoline2satrec(t.line1, t.line2),
-    }));
+      meta,
+      category: categoryForSatelliteMeta(meta),
+    };
+    });
     satCatalogSource = 'celestrak';
   }
 
@@ -734,12 +818,21 @@ async function ensureSatelliteCatalog(maxCount = 3000) {
 
     const rows = await gpResp.json();
     const allRows = (Array.isArray(rows) ? rows : []).filter(r => r?.TLE_LINE1 && r?.TLE_LINE2);
-    const tleRows = Number.isFinite(maxCount) ? allRows.slice(0, maxCount) : allRows;
-    satCatalog = tleRows.map((r, idx) => ({
+    satCatalog = allRows.map((r, idx) => {
+      const name = (r.OBJECT_NAME ?? `NORAD ${r.NORAD_CAT_ID ?? idx}`).trim();
+      const line1 = r.TLE_LINE1;
+      const line2 = r.TLE_LINE2;
+      const meta = deriveSatelliteMeta(name, line2);
+      return {
       id: `${idx}:${r.OBJECT_NAME ?? r.NORAD_CAT_ID ?? 'SAT'}`,
-      name: (r.OBJECT_NAME ?? `NORAD ${r.NORAD_CAT_ID ?? idx}`).trim(),
-      satrec: satellite.twoline2satrec(r.TLE_LINE1, r.TLE_LINE2),
-    }));
+      name,
+      line1,
+      line2,
+      satrec: satellite.twoline2satrec(line1, line2),
+      meta,
+      category: categoryForSatelliteMeta(meta),
+    };
+    });
     satCatalogSource = 'spacetrack';
   }
 
@@ -766,13 +859,34 @@ async function ensureSatelliteCatalog(maxCount = 3000) {
   satCatalogTs = now;
 }
 
-function satelliteSnapshot(maxCount = 2000) {
+function satelliteSnapshot(maxCount = Infinity, options = {}) {
   const nowDate = new Date();
   const gmst = satellite.gstime(nowDate);
   const points = [];
   const limit = Number.isFinite(maxCount) ? maxCount : satCatalog.length;
-  for (let i = 0; i < satCatalog.length && points.length < limit; i++) {
+  const selectedCategories = Array.isArray(options.categories)
+    ? options.categories.filter(Boolean).map(v => String(v).toLowerCase())
+    : [];
+  const categoryFilterEnabled = selectedCategories.length > 0;
+  const perCategory = Number.isFinite(options.perCategory) && options.perCategory > 0
+    ? Math.floor(options.perCategory)
+    : SATELLITE_MAX_PER_CATEGORY;
+  const perCategoryCounts = new Map();
+
+  for (let i = 0; i < satCatalog.length; i++) {
+    if (points.length >= limit) break;
     const s = satCatalog[i];
+    const category = s.category ?? 'unknown';
+
+    if (categoryFilterEnabled && !selectedCategories.includes(category)) {
+      continue;
+    }
+    if (categoryFilterEnabled) {
+      const used = perCategoryCounts.get(category) ?? 0;
+      if (used >= perCategory) continue;
+      perCategoryCounts.set(category, used + 1);
+    }
+
     const pv = satellite.propagate(s.satrec, nowDate);
     if (!pv?.position) continue;
     const geo = satellite.eciToGeodetic(pv.position, gmst);
@@ -783,16 +897,27 @@ function satelliteSnapshot(maxCount = 2000) {
       lat: toDeg(geo.latitude),
       lon: toDeg(geo.longitude),
       altM: geo.height * 1000,
+      line1: s.line1,
+      line2: s.line2,
+      category,
+      meta: s.meta,
     });
   }
   return points;
 }
 
-async function getSatellitesSnapshotPayload(maxCount = Infinity) {
+async function getSatellitesSnapshotPayload(maxCount = Infinity, options = {}) {
   const now = Date.now();
   const requestMax = Number.isFinite(maxCount) ? maxCount : Infinity;
+  const requestedPerCategory = Number.isFinite(options.perCategory) && options.perCategory > 0
+    ? Math.floor(options.perCategory)
+    : SATELLITE_MAX_PER_CATEGORY;
+  const selectedCategories = Array.isArray(options.categories)
+    ? options.categories.filter(Boolean).map(v => String(v).toLowerCase())
+    : [];
+  const categoryKey = selectedCategories.length ? selectedCategories.sort().join(',') : 'all';
   const snapshotTtl = BACKEND_SATELLITE_PROVIDER === 'n2yo' ? N2YO_SNAPSHOT_TTL_MS : SAT_SNAPSHOT_TTL_MS;
-  if (satSnapshotCache.points.length && satSnapshotCache.source === BACKEND_SATELLITE_PROVIDER && (now - satSnapshotCache.ts) < snapshotTtl && satSnapshotCache.maxCount >= requestMax) {
+  if (satSnapshotCache.points.length && satSnapshotCache.source === BACKEND_SATELLITE_PROVIDER && satSnapshotCache.categoryKey === categoryKey && satSnapshotCache.perCategory === requestedPerCategory && (now - satSnapshotCache.ts) < snapshotTtl && satSnapshotCache.maxCount >= requestMax) {
     const points = Number.isFinite(requestMax)
       ? satSnapshotCache.points.slice(0, requestMax)
       : satSnapshotCache.points;
@@ -806,8 +931,11 @@ async function getSatellitesSnapshotPayload(maxCount = Infinity) {
     points = await fetchN2yoSnapshot(computeMax);
     source = 'n2yo';
   } else {
-    await ensureSatelliteCatalog(computeMax);
-    points = satelliteSnapshot(computeMax);
+    await ensureSatelliteCatalog();
+    points = satelliteSnapshot(computeMax, {
+      categories: selectedCategories,
+      perCategory: requestedPerCategory,
+    });
     source = satCatalogSource;
   }
   const generatedAt = Date.now();
@@ -816,6 +944,8 @@ async function getSatellitesSnapshotPayload(maxCount = Infinity) {
     points,
     source,
     maxCount: computeMax,
+    perCategory: requestedPerCategory,
+    categoryKey,
   };
   scheduleCacheWrite();
   return { points: Number.isFinite(requestMax) ? points.slice(0, requestMax) : points, total: Number.isFinite(requestMax) ? Math.min(points.length, requestMax) : points.length, ts: generatedAt, source: `server-propagated:${source}`, cacheHit: false };
@@ -1061,8 +1191,13 @@ const server = http.createServer(async (req, res) => {
     const rawMax = parseInt(query.max ?? '0', 10);
     // 0 or missing → no limit (full catalog); otherwise honour the requested count
     const maxCount = rawMax > 0 ? rawMax : Infinity;
+    const perCategory = Math.max(parseInt(query.perCategory ?? `${SATELLITE_MAX_PER_CATEGORY}`, 10) || SATELLITE_MAX_PER_CATEGORY, 1);
+    const categories = String(query.categories ?? '')
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean);
     try {
-      const payload = await getSatellitesSnapshotPayload(maxCount);
+      const payload = await getSatellitesSnapshotPayload(maxCount, { perCategory, categories });
       res.writeHead(200);
       res.end(JSON.stringify(payload));
     } catch (err) {
@@ -1090,6 +1225,11 @@ const server = http.createServer(async (req, res) => {
     const bounds = (parts.length === 4 && parts.every(n => Number.isFinite(n))) ? parts : null;
     const include = new Set((query.include ?? 'flights,satellites,traffic,cameras').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
     const maxSat = Math.max(parseInt(query.satMax ?? '0', 10) || 0, 0) || Infinity;
+    const satPerCategory = Math.max(parseInt(query.satPerCategory ?? `${SATELLITE_MAX_PER_CATEGORY}`, 10) || SATELLITE_MAX_PER_CATEGORY, 1);
+    const satCategories = String(query.satCategories ?? '')
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean);
     const maxCam = Math.max(parseInt(query.camMax ?? `${CAMERA_MAX_POINTS}`, 10) || CAMERA_MAX_POINTS, 1);
 
     try {
@@ -1101,7 +1241,7 @@ const server = http.createServer(async (req, res) => {
         })
         : null;
       const satellitesPromise = include.has('satellites')
-        ? getSatellitesSnapshotPayload(maxSat)
+        ? getSatellitesSnapshotPayload(maxSat, { perCategory: satPerCategory, categories: satCategories })
         : null;
       const trafficPromise = (include.has('traffic') && bounds)
         ? getTrafficPayload(bounds)
@@ -1169,4 +1309,11 @@ server.listen(PORT, () => {
   console.log(`[proxy] Mode: ${SERVER_HEAVY_MODE ? 'heavy' : 'normal'}`);
   console.log(`[proxy] Providers: flights=${BACKEND_FLIGHT_PROVIDER}, satellites=${BACKEND_SATELLITE_PROVIDER}`);
   console.log(`[proxy] ShadowGrid → http://localhost:${PORT}/api/flights?bounds=minLon,minLat,maxLon,maxLat`);
+  ensureSatelliteCatalog()
+    .then(() => {
+      console.log(`[proxy] Satellite catalog primed: ${satCatalog.length} objects (${satCatalogSource})`);
+    })
+    .catch((err) => {
+      console.warn(`[proxy] Satellite catalog warm-up failed: ${err?.message ?? 'unknown'}`);
+    });
 });

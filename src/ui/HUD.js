@@ -9,7 +9,7 @@
 
 import * as Cesium from 'cesium';
 import { followEntity, stopFollow, isFollowing, followingLabel } from '../core/follow.js';
-import { setFollowMode, setFlightGlow, hasAssetModel } from '../layers/flights.js';
+import { setFollowMode, setFlightGlow, hasAssetModel, setEnrichedTypecode } from '../layers/flights.js';
 import { CITIES, flyTo } from '../core/camera.js';
 
 const DEV_MODE = ((import.meta.env.VITE_DEVELOPER_MODE ?? import.meta.env.VITE_DEV_MODE ?? 'false').toLowerCase() === 'true');
@@ -719,6 +719,7 @@ function initEntityPicker(viewer) {
       const vert     = props.vert?.getValue()   ?? 0;
       const dbFlags  = props.dbFlags?.getValue()  ?? 0;
       const provider = (props.provider?.getValue() ?? 'adsb').toUpperCase();
+      const classification = (props.classification?.getValue() ?? null);
       // Live type code from ADS-B feed (e.g. "B38M") — available immediately, no lookup needed
       const liveTypecode = (props.typecode?.getValue() ?? '').toUpperCase() || null;
 
@@ -731,14 +732,18 @@ function initEntityPicker(viewer) {
 
       // Show a loading state immediately, pre-filled with live ADS-B data we already have
       panel.style.display = 'block';
-      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags,
+      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification,
         typecode: liveTypecode, loading: true }, viewer, entity);
 
       // Fetch enrichment in background — pass null callsign if we only have the ICAO hex
       const info = await fetchAircraftInfo(icao.toLowerCase(), rawCallsign || null);
       // Keep live typecode if enrichment didn't return one
       if (!info.typecode && liveTypecode) info.typecode = liveTypecode;
-      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, ...info }, viewer, entity);
+      // Persist the enriched typecode into flights.js's cache so Follow can load the
+      // correct 3D asset. This survives update cycles (OpenSky never sends typecodes)
+      // and entity re-creation if the aircraft scrolls out then back into the viewport.
+      if (info.typecode) setEnrichedTypecode(icao.toLowerCase(), info.typecode);
+      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification, ...info }, viewer, entity);
 
     } else if (type === 'satellite') {
       // Remove glow from previously selected flight when selecting satellite
@@ -782,15 +787,12 @@ async function fetchAircraftInfo(icao, callsign) {
         const d = await r.json();
         const a = d.response?.aircraft;
         if (a) {
-          // type_code = ICAO designator (e.g. "B38M"), manufacturer + type_longname = full name
-          info.typecode     = a.type_code ?? null;
-          const mfr  = a.manufacturer  ?? '';
-          const long = a.type_longname ?? '';
-          // e.g. "B38M · Boeing 737 MAX 8"
-          const fullName = [mfr, long].filter(Boolean).join(' ');
-          info.typeDesc = (info.typecode && fullName)
-            ? `${info.typecode} · ${fullName}`
-            : (fullName || info.typecode || null);
+          // type_code = ICAO designator (e.g. "B38M"), manufacturer = brand (e.g. "BOEING")
+          info.typecode = a.type_code ?? null;
+          const mfr     = (a.manufacturer ?? '').trim();
+          // typeDesc shows the manufacturer only — typecode already encodes the specific variant.
+          // e.g. typeDisplay = "B788 · BOEING" not "B788 · BOEING 787 8"
+          info.typeDesc = mfr || null;
           info.registration = a.registration ?? null;
           info.operator     = a.registered_owner ?? null;
           info.country      = a.registered_owner_country_iso_name ?? null;
@@ -799,21 +801,17 @@ async function fetchAircraftInfo(icao, callsign) {
       }
     } catch { /* ignore */ }
 
-    // Fallback: hexdb.io
-    if (!info.registration) {
+    // Fallback: hexdb.io — run if we're missing registration OR type code
+    if (!info.registration || !info.typecode) {
       try {
         const r = await fetch(`https://hexdb.io/api/v1/aircraft/${icao}`, { signal: AbortSignal.timeout(4000) });
         if (r.ok) {
           const d = await r.json();
-          info.registration = d.Registration    ?? null;
-          if (!info.typecode)  info.typecode  = d.ICAOTypeCode ?? null;
-          // Build typeDesc from hexdb fields if not already set
+          if (!info.registration) info.registration = d.Registration    ?? null;
+          if (!info.typecode)     info.typecode     = d.ICAOTypeCode    ?? null;
+          // Build typeDesc from hexdb Type field if not already set
           const hexType = d.Type ?? null;
-          if (!info.typeDesc && hexType) {
-            info.typeDesc = (info.typecode && hexType !== info.typecode)
-              ? `${info.typecode} · ${hexType}`
-              : hexType;
-          }
+          if (!info.typeDesc && hexType) info.typeDesc = hexType;
           if (!info.operator)  info.operator   = d.RegisteredOwners ?? null;
           if (!info.country)   info.country    = d.Country ?? null;
         }
@@ -834,8 +832,8 @@ async function fetchAircraftInfo(icao, callsign) {
     // Airline callsigns are 2-3 letters + 1-4 digits + optional suffix letter.
     // Also reject 6-char hex-looking strings (e.g. ICAO addresses like CEF05F)
     // by requiring at least one non-hex digit (G-Z range) in the letter prefix.
-    const isAirlineCallsign = /^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(callsign)
-      && callsign.length <= 8
+    const isAirlineCallsign = /^[A-Z]{2,3}\d{1,4}[A-Z]{0,2}$/.test(callsign)
+      && callsign.length <= 9
       && !/^[0-9A-F]{6}$/i.test(callsign);
     
     if (isAirlineCallsign) {
@@ -870,7 +868,7 @@ async function fetchAircraftInfo(icao, callsign) {
 
 function renderPanel(panel, data, viewer, entity) {
   const {
-    icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags,
+    icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification,
     registration, typecode, typeDesc, operator, route, country, year, loading
   } = data;
 
@@ -879,10 +877,10 @@ function renderPanel(panel, data, viewer, entity) {
   const spdStr     = kts    ? `${Math.round(kts)} kts · ${Math.round(kts*1.852)} km/h` : '–';
   const hdgStr     = heading ? `${Math.round(heading)}°`                  : '–';
   const vsStr      = vert   ? `${vert > 0 ? '↑' : '↓'} ${Math.abs(Math.round(vert)).toLocaleString()} ft/min` : 'level';
-  const acColor    = aircraftClassColor(dbFlags, callsign);
-  const acLabel    = aircraftClassLabel(dbFlags, callsign);
+  const acColor    = aircraftClassColor(classification, dbFlags, callsign);
+  const acLabel    = aircraftClassLabel(classification, dbFlags, callsign);
   const typeDisplay = typecode
-    ? (typeDesc && typeDesc !== typecode ? `${typecode} · ${typeDesc}` : typecode)
+    ? (typeDesc ? `${typecode} · ${typeDesc}` : typecode)
     : typeDesc;
   const has3dModel = hasAssetModel(typecode);
   const aircraftIcon = has3dModel ? '3D ✈' : '✈';
@@ -1055,17 +1053,25 @@ function satelliteHtml({ name, provider, isMilitary, orbitType, application, cre
 }
 
 // Classification colors — must match flights.js
-function aircraftClassColor(dbFlags, callsign) {
-  if ((dbFlags ?? 0) & 1) return '#f44336'; // military — red
+function normalizeAircraftClassification(classification, dbFlags, callsign) {
+  const normalized = (classification ?? '').toLowerCase();
+  if (normalized === 'military' || normalized === 'commercial' || normalized === 'other') {
+    return normalized;
+  }
+  if ((dbFlags ?? 0) & 1) return 'military';
   const cs = (callsign ?? '').toUpperCase();
-  if (/^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(cs)) return '#00e676'; // commercial — green
-  return '#ffa726'; // other — orange
+  if (/^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(cs)) return 'commercial';
+  return 'other';
 }
-function aircraftClassLabel(dbFlags, callsign) {
-  if ((dbFlags ?? 0) & 1) return 'MILITARY';
-  const cs = (callsign ?? '').toUpperCase();
-  if (/^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(cs)) return 'COMMERCIAL';
-  return 'OTHER';
+
+function aircraftClassColor(classification, dbFlags, callsign) {
+  const c = normalizeAircraftClassification(classification, dbFlags, callsign);
+  if (c === 'military') return '#f44336';
+  if (c === 'commercial') return '#00e676';
+  return '#ffa726';
+}
+function aircraftClassLabel(classification, dbFlags, callsign) {
+  return normalizeAircraftClassification(classification, dbFlags, callsign).toUpperCase();
 }
 // stub kept for any leftover references
 function altitudeColor() { return '#00e676'; }

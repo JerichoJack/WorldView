@@ -4,11 +4,24 @@
  */
 
 let currentMode = 'normal';
+const SERVER_HEAVY_MODE = ((import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true');
 
 // Track collapsed state for filter containers
 const filterCollapsedState = new Map();
 
+function setSatelliteFilterButtonsActive(active) {
+  const satFilterButtons = document.querySelectorAll('.filter-btn[data-filter^="satellites:"]');
+  satFilterButtons.forEach((filterBtn) => {
+    filterBtn.classList.toggle('active', active);
+    filterBtn.classList.toggle('inactive', !active);
+  });
+}
+
 export function initControls(viewer, layers) {
+  if (SERVER_HEAVY_MODE) {
+    setSatelliteFilterButtonsActive(false);
+  }
+
   // ── Layer toggles ────────────────────────────────────────────────────────
   document.querySelectorAll('.layer-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -31,6 +44,18 @@ export function initControls(viewer, layers) {
 
       const layer = layers[layerName];
       if (layer?.setEnabled) layer.setEnabled(isActive);
+
+      if (SERVER_HEAVY_MODE && layerName === 'satellites' && isActive) {
+        // In heavy mode start with no categories enabled so operators opt-in.
+        setSatelliteFilterButtonsActive(false);
+        const satFilterButtons = document.querySelectorAll('.filter-btn[data-filter^="satellites:"]');
+        satFilterButtons.forEach((filterBtn) => {
+          const [, filterType] = (filterBtn.dataset.filter ?? '').split(':');
+          if (filterType) {
+            layer?.setClassificationFilter?.(filterType, false);
+          }
+        });
+      }
 
       // Show/hide filter container for this layer
       const filterContainer = btn.nextElementSibling;

@@ -61,12 +61,12 @@ Set `VITE_FLIGHT_PROVIDER` in your `.env` to switch.
 
 | Provider | Coverage | Cost | Account / Key? | Notes |
 |---|---|---|---|---|
-| `airplaneslive` | Global, unfiltered ADS-B + MLAT | Free | ❌ None required | **Recommended default**; no rate limit for reasonable use |
+| `airplaneslive` | Global, unfiltered ADS-B + MLAT | Free | ❌ None required | Great fallback when OpenSky is limited or unavailable |
 | `adsbool` | Global, unfiltered | Free | ❌ None required | ADS-B Exchange drop-in replacement; includes military and untracked flights; ODbL licensed |
-| `opensky` | Global, ~10k aircraft | Free (non-commercial) | ✅ OAuth2 client credentials | 4,000 credits/day authenticated; see setup below |
-| *(default)* `proxy` | Viewport-aware global | Free | ❌ None required | Uses `server/proxy.mjs` — fetches from `opendata.adsb.fi` hub grid; best for local dev |
+| *(default)* `opensky` | Global, ~10k aircraft | Free (non-commercial) | ✅ OAuth2 client credentials | **Recommended default**; strongest live density in test runs; 4,000 credits/day authenticated |
+| `proxy` | Viewport-aware global | Free | ❌ None required | Uses `server/proxy.mjs` — fetches from `opendata.adsb.fi` hub grid; best for local dev and server-heavy mode |
 
-> **Proxy server:** The `proxy` provider (default when `VITE_FLIGHT_PROVIDER` is not set) requires the Node.js proxy to be running separately. See [Running the Proxy](#running-the-proxy) below.
+> **Proxy server:** The `proxy` provider requires the Node.js proxy to be running separately. See [Running the Proxy](#running-the-proxy) below.
 
 ---
 
@@ -193,7 +193,7 @@ Then edit `.env` and set:
 VITE_MAP_PROVIDER=cesium
 VITE_CESIUM_ION_TOKEN=your_cesium_ion_token_here
 
-VITE_FLIGHT_PROVIDER=airplaneslive
+VITE_FLIGHT_PROVIDER=opensky
 
 VITE_SATELLITE_PROVIDER=celestrak
 ```
@@ -222,7 +222,7 @@ Open [http://localhost:5173](http://localhost:5173) or your local network IP (e.
 
 ### Running the Proxy
 
-If `VITE_FLIGHT_PROVIDER` is unset (or set to `proxy`), the app fetches flight data through a local Node.js proxy server. 
+If `VITE_FLIGHT_PROVIDER=proxy`, the app fetches flight data through a local Node.js proxy server. 
 
 The proxy runs on port `3001` and handles viewport-aware hub fetching from `opendata.adsb.fi`, with per-hub caching (12s TTL) and a stale aircraft cleanup (2 min). It is not required if you use the `airplaneslive`, `adsbool`, or `opensky` providers directly.
 

@@ -18,14 +18,23 @@ import Hls from 'hls.js';
 import { requestServerSnapshotRefresh, setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
-const MANIFEST_URL = '/camera-data/tiles-manifest.json';
-const TILE_BASE    = '/camera-data/tiles';
+const MANIFEST_URL  = '/camera-data/tiles-manifest.json';
+const TILE_BASE     = '/camera-data/tiles';
+const GLOBE_CAM_URL = '/camera-data/cameras-globe.json';
 const CAMERA_SNAPSHOT_URL = '/api/localproxy/api/cameras/snapshot';
 const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true';
 const SERVER_SNAPSHOT_MAX_CAMERAS = Math.max(parseInt(import.meta.env.VITE_SERVER_CAMERA_MAX_OBJECTS ?? '3000', 10) || 3000, 100);
-const MAX_ALT_M    = 3_000_000;  // 3,000 km — hide above this
-const MAX_TILES    = 24;         // max cached & visible tiles (LRU)
-const THROTTLE_MS  = 400;        // min ms between viewport recalculations
+const MAX_ALT_M     = 3_000_000;  // 3,000 km — individual tiles hidden above this
+const MAX_TILES     = 24;         // max cached & visible tiles (LRU)
+const THROTTLE_MS   = 400;        // min ms between viewport recalculations
+
+// Globe coverage dot colors — match the camera icon palette
+// typeIdx: 0=image (#00ff88 green)  1=video (#00aaff blue)  2=hybrid (#cc88ff purple)
+const GLOBE_COLORS = [
+  new Cesium.Color(0 / 255, 255 / 255, 136 / 255, 0.9),
+  new Cesium.Color(0 / 255, 170 / 255, 255 / 255, 0.9),
+  new Cesium.Color(204 / 255, 136 / 255, 255 / 255, 0.9),
+];
 
 // ── Icons ──────────────────────────────────────────────────────────────────────
 // Three variants: image-only (green), video (blue), hybrid (purple)
@@ -58,6 +67,8 @@ let _panel        = null;       // DOM click-panel
 let _throttleId   = null;
 let _hlsInstance  = null;       // active hls.js instance — destroyed on panel close
 let _serverCamMap = new Map();  // id -> Cesium.Entity in server-heavy mode
+let _globePoints  = null;       // Cesium.PointPrimitiveCollection — globe-altitude coverage
+let _globeReady   = false;      // cameras-globe.json loaded and points built
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -268,7 +279,7 @@ async function _spawnEntities(key) {
         image:                    ICONS[cam.t] ?? ICONS.i,
         verticalOrigin:           Cesium.VerticalOrigin.CENTER,
         horizontalOrigin:         Cesium.HorizontalOrigin.CENTER,
-        scale:                    0.85,
+        scale:                    1.25,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       properties: {
@@ -381,7 +392,7 @@ function _applyServerSnapshotCameras(cameras) {
         image:                    ICONS[cam.t] ?? ICONS.i,
         verticalOrigin:           Cesium.VerticalOrigin.CENTER,
         horizontalOrigin:         Cesium.HorizontalOrigin.CENTER,
-        scale:                    0.85,
+        scale:                    1.25,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       properties: {
@@ -405,8 +416,49 @@ function _applyServerSnapshotCameras(cameras) {
   }
 }
 
+/**
+ * Sync _globePoints and _ds visibility based on current altitude + enabled state.
+ * Globe coverage now stays on at all altitudes for consistent location presence.
+ * Tile/server entities remain an overlay that can stream in/out with viewport detail.
+ */
+function _syncVisibility() {
+  if (_globePoints) _globePoints.show = _enabled && _globeReady;
+  _ds.show = _enabled;
+}
+
+/**
+ * Background-load cameras-globe.json and build a PointPrimitiveCollection.
+ * Called once at init — no await, runs in background.
+ */
+async function _loadGlobeCoverage() {
+  try {
+    const res = await fetch(GLOBE_CAM_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data?.d)) throw new Error('unexpected format');
+
+    const col = new Cesium.PointPrimitiveCollection();
+    col.show = false;
+    for (const [lat, lng, ti] of data.d) {
+      col.add({
+        position:                 Cesium.Cartesian3.fromDegrees(lng, lat, 10),
+        color:                    GLOBE_COLORS[ti] ?? GLOBE_COLORS[0],
+        pixelSize:                3,
+      });
+    }
+    _globePoints = _viewer.scene.primitives.add(col);
+    _globeReady  = true;
+    console.info(`[CCTV] Globe coverage ready — ${data.n.toLocaleString()} cameras`);
+    _syncVisibility();   // apply correct show state for current altitude
+  } catch (err) {
+    console.warn('[CCTV] Globe coverage unavailable:', err.message,
+      '— run `node server/collectors/collectCameras.mjs` to regenerate cameras-globe.json');
+  }
+}
+
 function _onCameraChange() {
   if (!_enabled) return;
+  _syncVisibility();   // keep fallback coverage visible while detail entities refresh
   if (_throttleId) return;
   _throttleId = setTimeout(() => {
     _throttleId = null;
@@ -445,6 +497,10 @@ export async function initCCTV(viewer) {
     });
   }
 
+  // Globe coverage — load all known camera positions in background (both modes).
+  // Builds a PointPrimitiveCollection used when altitude > MAX_ALT_M.
+  _loadGlobeCoverage();
+
   // Build the click panel DOM early
   _panel = buildPanel();
 
@@ -480,7 +536,7 @@ export async function initCCTV(viewer) {
   return {
     setEnabled(val) {
       _enabled = !!val;
-      _ds.show = _enabled;
+      _syncVisibility();  // sets _ds.show and _globePoints.show based on altitude
       if (_enabled) {
         if (SERVER_HEAVY_MODE) {
           setServerSnapshotLayerEnabled('cameras', true);

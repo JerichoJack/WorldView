@@ -7,7 +7,7 @@
 import * as Cesium from 'cesium';
 import { setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
-const PROVIDER = (import.meta.env.VITE_FLIGHT_PROVIDER ?? 'proxy').toLowerCase();
+const PROVIDER = (import.meta.env.VITE_FLIGHT_PROVIDER ?? 'opensky').toLowerCase();
 const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true';
 const ACTIVE_PROVIDER = SERVER_HEAVY_MODE ? 'proxy' : PROVIDER;
 const POLL_MS  = 10_000;
@@ -223,6 +223,8 @@ const TYPE_LIGHT = new Set([
 //   4. Callsign pattern: military prefixes (RCH, RRR, CNV, etc.) → military
 
 // Major military ICAO hex ranges (prefix matches)
+// NOTE: Treat these as weak evidence unless reinforced by military dbFlags,
+// callsign, or military-specific type code.
 const MILITARY_HEX_PREFIXES = [
   'ae',           // United States military (AE0000–AFFFFF)
   '43c',          // United Kingdom military
@@ -233,22 +235,38 @@ const MILITARY_HEX_PREFIXES = [
   '710',          // Japan JASDF
   '7c0',          // Australia military
   'c40',          // Canada military
-  '4ca',          // Ireland Air Corps
+  // NOTE: '4ca' removed — this is the entire Irish ICAO block (4C0000–4CFFFF),
+  //       including all Aer Lingus/Ryanair/civilian EI- registrations.
+  //       Irish Air Corps aircraft don't have a unique isolated prefix.
   '48c',          // Italy military
   '340',          // Spain military
+];
+
+// Military-specific airframe type codes.
+const MILITARY_TYPE_PREFIXES = [
+  'C17', 'C130', 'C135', 'KC', 'E3', 'E6', 'P8',
+  'F15', 'F16', 'F18', 'F22', 'F35', 'B1', 'B2', 'B52',
+  'A400', 'IL76', 'AN12', 'AN22', 'AN72', 'AN74',
 ];
 
 // Well-known commercial airline ICAO 3-letter prefixes (callsign starts with these)
 const AIRLINE_PREFIXES = new Set([
   'AAL','UAL','DAL','SWA','SKW','ASA','NKS','JBU','FFT','HAL',  // US majors
+  'JIA','ENY','RPA','EDV','MXY','AAY','NKS','JBU','JZA','QXE',  // US/CA regional + ULCC
   'BAW','EZY','RYR','VIR','TOM','MON','LOG','TCX','EXS',        // UK
-  'AFR','AEE','IBE','VLG','TAP','KLM','DLH','LFT','BEL',        // Europe
-  'UAE','ETD','QTR','SVA','ELY','MEA','THY','MSR',              // Middle East
-  'SIA','CPA','CES','CSN','MAS','THA','GIA','PAL','AIC',        // Asia
-  'QFA','ANZ','AAA',                                            // Pacific
-  'ETH','KQA','SAA',                                            // Africa
-  'TAM','GLO','AVA','LAN','AZU','BOA',                          // South America
+  'AFR','AEE','IBE','VLG','TAP','KLM','DLH','LFT','BEL','SWR',  // Europe
+  'AUA','SAS','FIN','LOT','TAR','CSA','EWG','TUI','WZZ','NAX',  // Europe
+  'UAE','ETD','QTR','SVA','ELY','MEA','THY','MSR','KAC',        // Middle East
+  'QTR','UAE','ETD','ABY','FDB','JZR','AIZ','OMA','QJE',        // Gulf / ME low-cost
+  'SIA','CPA','CES','CSN','MAS','THA','GIA','PAL','AIC','ANA',  // Asia
+  'JAL','KAL','AAR','JNA','AIQ','IGO','AXB','VTI','CCA','HDA',  // Asia
+  'CSH','CES','CSN','CHH','XAX','HVN','VJC','SJO','AMU','ALK',  // Asia
+  'QFA','ANZ','JST','VOZ','RXA','QJE','QLK',                    // Pacific
+  'ETH','KQA','SAA','RAM','TSC','MAU','DAH','RWD','EWA',        // Africa
+  'TAM','GLO','AVA','LAN','AZU','BOA','CMP','AMX','VOI','VIV',  // Latin America
+  'ARG','LPE','SKX','ACA','WJA','JBU','DAL','AAL','UAL',        // Americas interline
   'FDX','UPS','ABX','ATN','GTI',                                // Cargo
+  'CJT','CLX','BOX','DHK','NCA','KAL','CKK','MNB','BCS',        // Cargo international
 ]);
 
 // Known military callsign prefixes
@@ -266,34 +284,81 @@ const MILITARY_CALLSIGN_PREFIXES = [
   'SHF',  // SHAPE
 ];
 
+// OpenSky / ADS-B emitter category values that are strongly commercial-like.
+// Source: OpenSky state vector category documentation.
+const COMMERCIAL_NUMERIC_CATEGORIES = new Set([2, 3, 4, 5, 6]);
+
+function normalizeCategory(cat) {
+  if (typeof cat === 'number' && Number.isFinite(cat)) return cat;
+  if (typeof cat === 'string') {
+    const s = cat.trim().toUpperCase();
+    // READSB-like providers often use A0..A7 strings.
+    if (/^[AB][0-9]$/.test(s)) return s;
+    const n = Number(s);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function isLikelyCommercialCallsign(cs) {
+  if (!cs) return false;
+  if (MILITARY_CALLSIGN_PREFIXES.some(p => cs.startsWith(p))) return false;
+
+  // Typical airline format: 2-3 letter designator + flight number + optional 1-2 letter suffix.
+  // Allow up to 2 suffix letters (e.g. EIN7AC, BAW234A).
+  const m = cs.match(/^([A-Z]{2,3})(\d{1,4})([A-Z]{0,2})$/);
+  if (!m) return false;
+
+  const prefix = m[1];
+  if (prefix.length === 3) return true; // Most ICAO operators are 3-letter codes
+  return AIRLINE_PREFIXES.has(prefix);
+}
+
 function classifyAircraft(a) {
-  // 1. dbFlags bit 0 = military (most reliable when present)
-  if ((a.dbFlags ?? 0) & 1) return 'military';
-
-  // 2. Known military ICAO hex prefix
-  const hexLow = (a.id ?? '').toLowerCase();
-  if (MILITARY_HEX_PREFIXES.some(p => hexLow.startsWith(p))) return 'military';
-
-  // 3. Callsign-based detection
+  // 1) Extract reusable evidence signals
   const cs = (a.callsign ?? '').toUpperCase().trim();
+  const prefix3 = cs.slice(0, 3);
+  const hasMilitaryCallsign = !!cs && MILITARY_CALLSIGN_PREFIXES.some(p => cs.startsWith(p));
+  const hasCommercialCallsign = isLikelyCommercialCallsign(cs)
+    || (!!cs && AIRLINE_PREFIXES.has(prefix3) && /\d/.test(cs));
+  const category = normalizeCategory(a.category);
+  const hasCommercialCategory = typeof category === 'number' && COMMERCIAL_NUMERIC_CATEGORIES.has(category);
+
+  // 2) Strong direct signals
+  if ((a.dbFlags ?? 0) & 1) return 'military';
+  if (hasMilitaryCallsign) return 'military';
+  if (hasCommercialCallsign || hasCommercialCategory) return 'commercial';
+
+  // 3) Airframe evidence
+  const typecode = (a.typecode ?? '').toUpperCase().trim();
+  const hasMilitaryType = !!typecode && MILITARY_TYPE_PREFIXES.some(p => typecode.startsWith(p));
+  if (hasMilitaryType) return 'military';
+
+  // 4) Known military ICAO hex prefix (weak evidence). To reduce false
+  // positives, do NOT use this if we already saw commercial category data.
+  const hexLow = (a.id ?? '').toLowerCase();
+  if (!hasCommercialCategory && MILITARY_HEX_PREFIXES.some(p => hexLow.startsWith(p))) {
+    return 'military';
+  }
+
+  // 5) Fallback
   if (cs) {
-    if (MILITARY_CALLSIGN_PREFIXES.some(p => cs.startsWith(p))) return 'military';
-    // Commercial: 3-letter IATA/ICAO prefix + digits (e.g. UAL123, BAW456)
-    const prefix3 = cs.slice(0, 3);
-    if (AIRLINE_PREFIXES.has(prefix3) && /\d/.test(cs)) return 'commercial';
-    // Generic commercial pattern: 2-3 letters + numbers
-    if (/^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(cs)) return 'commercial';
+    if (isLikelyCommercialCallsign(cs)) return 'commercial';
   }
 
   return 'other';
 }
 
-function aircraftColor(a) {
-  switch (classifyAircraft(a)) {
-    case 'military':   return '#f44336';  // red
-    case 'commercial': return '#00e676';  // green
-    default:           return '#ffa726';  // orange
+function classificationColor(classification) {
+  switch ((classification ?? 'other').toLowerCase()) {
+    case 'military': return '#f44336';
+    case 'commercial': return '#00e676';
+    default: return '#ffa726';
   }
+}
+
+function aircraftColor(a) {
+  return classificationColor(classifyAircraft(a));
 }
 
 // Keep for HUD panel badge (mirrors classification color)
@@ -664,6 +729,24 @@ export function hasAssetModel(typecode) {
 const entityMap = new Map();
 const trackStateMap = new Map();
 const trackPosPropMap = new Map();
+// Enriched typecodes from HUD lookup (adsbdb/hexdb) keyed by lowercase ICAO hex.
+// These survive update cycles (OpenSky never sends typecodes) and entity re-creation.
+const enrichedTypecodeMap = new Map();
+
+/**
+ * Store a HUD-enriched typecode for an aircraft and update its entity property.
+ * Called from HUD.js after fetchAircraftInfo resolves the type code.
+ */
+export function setEnrichedTypecode(icaoHex, typecode) {
+  if (!icaoHex || !typecode) return;
+  const key = icaoHex.toLowerCase();
+  enrichedTypecodeMap.set(key, typecode.toUpperCase());
+  // Update entity if it exists in the current viewport
+  const entity = entityMap.get(key);
+  if (entity?.properties?.typecode?.setValue) {
+    entity.properties.typecode.setValue(typecode.toUpperCase());
+  }
+}
 let enabled     = false;  // Start disabled by default
 let oskToken    = null;
 let oskTokenExp = 0;
@@ -898,9 +981,8 @@ export function setFollowMode(icaoHex, active) {
   if (active) {
     hideAllFlatIcons = true;
     // Derive color from stored properties so military/commercial/other colors match
-    const dbFlags  = entity.properties?.dbFlags?.getValue?.() ?? 0;
-    const callsign = entity.properties?.callsign?.getValue?.() ?? '';
-    const color    = aircraftColor({ dbFlags, callsign });
+    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
     const shape    = getShape({ category, typecode });
@@ -1158,7 +1240,8 @@ function mapProxyAircraft(aircraft) {
 async function fetchOpenSky() {
   const token   = await getOpenSkyToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp    = await fetch('/api/opensky/api/states/all', { headers });
+  // Request extended state vectors so index 17 (emitter category) is present.
+  const resp    = await fetch('/api/opensky/api/states/all?extended=1', { headers });
   if (!resp.ok) throw new Error(`OpenSky ${resp.status}`);
   const data = await resp.json();
   return (data.states ?? [])
@@ -1171,7 +1254,7 @@ async function fetchOpenSky() {
       altFt:    (s[7] ?? 3000) * 3.281,
       heading:  s[10] ?? 0,
       kts:      (s[9] ?? 0) * 1.944,
-      category: '',
+      category: Number.isFinite(Number(s[17])) ? Number(s[17]) : null,
       squawk:   '',
       vert:     (s[11] ?? 0) * 196.85,  // m/s → ft/min
     }));
@@ -1312,7 +1395,10 @@ function renderAircraft(viewer, aircraft) {
         setProp(entity.properties, 'dbFlags', a.dbFlags);
         setProp(entity.properties, 'vert', a.vert);
         setProp(entity.properties, 'category', a.category);
-        setProp(entity.properties, 'typecode', a.typecode);
+        // Only overwrite typecode from the feed if the feed actually has one.
+        // Preserve any HUD-enriched value when the provider (e.g. OpenSky) sends nothing.
+        const effectiveTypecode = a.typecode || enrichedTypecodeMap.get(a.id) || '';
+        setProp(entity.properties, 'typecode', effectiveTypecode);
         setProp(entity.properties, 'classification', classification);
       }
     } else {
@@ -1355,7 +1441,7 @@ function renderAircraft(viewer, aircraft) {
           dbFlags:        a.dbFlags,
           vert:           a.vert,
           category:       a.category,
-          typecode:       a.typecode,
+          typecode:       a.typecode || enrichedTypecodeMap.get(a.id) || '',
           provider:       ACTIVE_PROVIDER,
           classification: classification,
         },
@@ -1455,9 +1541,8 @@ export function setFlightGlow(icaoHex, active) {
   if (active) {
     selectedFlightId = id;
     // Get current color and shape from stored properties
-    const dbFlags  = entity.properties?.dbFlags?.getValue?.() ?? 0;
-    const callsign = entity.properties?.callsign?.getValue?.() ?? '';
-    const color    = aircraftColor({ dbFlags, callsign });
+    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
     const shape    = getShape({ category, typecode });
@@ -1470,9 +1555,8 @@ export function setFlightGlow(icaoHex, active) {
   } else {
     if (selectedFlightId === id) selectedFlightId = null;
     // Restore normal icon
-    const dbFlags  = entity.properties?.dbFlags?.getValue?.() ?? 0;
-    const callsign = entity.properties?.callsign?.getValue?.() ?? '';
-    const color    = aircraftColor({ dbFlags, callsign });
+    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
     const shape    = getShape({ category, typecode });

@@ -24,7 +24,7 @@
 
 import * as Cesium from 'cesium';
 import * as satellite from 'satellite.js';
-import { setServerSnapshotLayerEnabled, subscribeServerSnapshot } from '../core/serverSnapshot.js';
+import { setServerSnapshotLayerEnabled, setServerSnapshotSatelliteConfig, subscribeServerSnapshot } from '../core/serverSnapshot.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ const SPACETRACK_USER =  import.meta.env.VITE_SPACETRACK_USERNAME   ?? '';
 const SPACETRACK_PASS =  import.meta.env.VITE_SPACETRACK_PASSWORD   ?? '';
 const SATELLITE_SNAPSHOT_URL = '/api/localproxy/api/satellites/snapshot';
 const SNAPSHOT_POLL_MS = 2_000;
+const SATELLITE_MAX_PER_CATEGORY = Math.max(parseInt(import.meta.env.VITE_SATELLITE_MAX_PER_CATEGORY ?? (import.meta.env.VITE_SATELLITE_MAX_OBJECTS ?? '500'), 10) || 500, 1);
 
 const PROPAGATE_MS  = 1_000;
 const TRACK_MINUTES = 90;
@@ -144,15 +145,17 @@ const satMap  = new Map();
 let enabled   = false;  // Start disabled by default
 let lastSatelliteStatusKey = '';
 
-// Classification filter state — all enabled by default
+const DEFAULT_CLASSIFICATION_ENABLED = !SERVER_HEAVY_MODE;
+
+// Classification filter state — normal mode defaults to on, heavy mode defaults to off.
 const classificationFilters = {
-  military: true,
-  crewed: true,
-  communication: true,
-  earthobservation: true,
-  navigation: true,
-  astronomical: true,
-  unknown: true,
+  military: DEFAULT_CLASSIFICATION_ENABLED,
+  crewed: DEFAULT_CLASSIFICATION_ENABLED,
+  communication: DEFAULT_CLASSIFICATION_ENABLED,
+  earthobservation: DEFAULT_CLASSIFICATION_ENABLED,
+  navigation: DEFAULT_CLASSIFICATION_ENABLED,
+  astronomical: DEFAULT_CLASSIFICATION_ENABLED,
+  unknown: DEFAULT_CLASSIFICATION_ENABLED,
 };
 
 /**
@@ -160,13 +163,26 @@ const classificationFilters = {
  */
 function shouldShowSatellite(meta) {
   if (!enabled) return false;
-  
-  if (meta.isMilitary) return classificationFilters.military;
-  if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') return classificationFilters.crewed;
-  
-  const app = (meta.application ?? 'Unknown').toLowerCase();
-  const filterKey = app === 'earth observation' ? 'earthobservation' : app;
+
+  const filterKey = classificationKeyForMeta(meta);
   return classificationFilters[filterKey] ?? classificationFilters.unknown;
+}
+
+function classificationKeyForMeta(meta = {}) {
+  if (meta.isMilitary) return 'military';
+  if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+  const app = (meta.application ?? 'Unknown').toLowerCase();
+  if (app === 'earth observation') return 'earthobservation';
+  if (app === 'communication') return 'communication';
+  if (app === 'navigation') return 'navigation';
+  if (app === 'astronomical') return 'astronomical';
+  return 'unknown';
+}
+
+function getEnabledSatelliteCategories() {
+  return Object.entries(classificationFilters)
+    .filter(([, isOn]) => isOn)
+    .map(([category]) => category);
 }
 
 function publishSystemStatus(msg, level = 'ok', key = `${level}:${msg}`) {
@@ -247,42 +263,103 @@ async function initSatellitesServerSnapshot(viewer) {
   const entities = new Map();
   let enabledLocal = false;
 
+  function syncServerSnapshotSatelliteConfig() {
+    setServerSnapshotSatelliteConfig({
+      categories: getEnabledSatelliteCategories(),
+      perCategory: SATELLITE_MAX_PER_CATEGORY,
+    });
+  }
+
+  syncServerSnapshotSatelliteConfig();
+
+  function applyEntityVisibility(record) {
+    const visible = enabledLocal && shouldShowSatellite(record.meta);
+    record.entity.show = visible;
+    if (record.trackEntity) {
+      record.trackEntity.show = visible;
+    }
+  }
+
+  function classifyPointColor(meta) {
+    if (meta.isMilitary) {
+      return Cesium.Color.fromCssColorString('#ff3b30');
+    }
+    if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') {
+      return Cesium.Color.fromCssColorString('#00ff66');
+    }
+    switch (meta.application ?? 'Unknown') {
+      case 'Communication': return Cesium.Color.fromCssColorString('#ffea00');
+      case 'Earth Observation': return Cesium.Color.fromCssColorString('#ff9800');
+      case 'Navigation': return Cesium.Color.fromCssColorString('#9c27b0');
+      case 'Astronomical': return Cesium.Color.fromCssColorString('#e91e63');
+      default: return Cesium.Color.fromCssColorString('#00aaff');
+    }
+  }
+
+  function buildSnapshotMeta(point) {
+    if (point?.meta && typeof point.meta === 'object') {
+      return {
+        isMilitary: point.meta.isMilitary === true,
+        application: point.meta.application ?? 'Unknown',
+        crewedStatus: point.meta.crewedStatus ?? 'Uncrewed',
+        orbitType: point.meta.orbitType ?? 'Unknown',
+      };
+    }
+    return deriveSatelliteMeta(point?.name ?? 'Unknown', point?.line2 ?? '');
+  }
+
   function upsertPoint(point) {
     const pos = Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.altM);
-    const existing = entities.get(point.id);
+    const id = String(point.id ?? point.name ?? `${point.lat}:${point.lon}`);
+    const existing = entities.get(id);
+    const meta = buildSnapshotMeta(point);
     if (existing) {
-      existing.position = pos;
-      existing.show = enabledLocal;
+      existing.entity.position = pos;
+      if (existing.trackEntity && point.line1 && point.line2) {
+        try {
+          existing.satrec = satellite.twoline2satrec(point.line1, point.line2);
+        } catch {
+          existing.satrec = null;
+        }
+      }
+      existing.meta = meta;
+      applyEntityVisibility(existing);
       return;
     }
 
-    // Classify by name so coloring matches the full (non-snapshot) path
-    const meta        = deriveSatelliteMeta(point.name, '');
-    const isMilitary  = meta.isMilitary;
-    const isCrewed    = (meta.crewedStatus ?? '').toLowerCase() === 'crewed';
-    const application = meta.application ?? 'Unknown';
-
-    let pointColor;
-    if (isMilitary) {
-      pointColor = Cesium.Color.fromCssColorString('#ff3b30');
-    } else if (isCrewed) {
-      pointColor = Cesium.Color.fromCssColorString('#00ff66');
-    } else {
-      switch (application) {
-        case 'Communication':    pointColor = Cesium.Color.fromCssColorString('#ffea00'); break;
-        case 'Earth Observation': pointColor = Cesium.Color.fromCssColorString('#ff9800'); break;
-        case 'Navigation':       pointColor = Cesium.Color.fromCssColorString('#9c27b0'); break;
-        case 'Astronomical':     pointColor = Cesium.Color.fromCssColorString('#e91e63'); break;
-        default:                 pointColor = Cesium.Color.fromCssColorString('#00aaff'); break;
+    let satrec = null;
+    if (point.line1 && point.line2) {
+      try {
+        satrec = satellite.twoline2satrec(point.line1, point.line2);
+      } catch {
+        satrec = null;
       }
     }
 
+    let trackEntity = null;
+    if (satrec) {
+      const trackPositions = computeGroundTrack(satrec, new Date());
+      trackEntity = viewer.entities.add({
+        show: false,
+        polyline: {
+          positions: trackPositions,
+          width: 1,
+          material: new Cesium.PolylineDashMaterialProperty({
+            color: Cesium.Color.fromCssColorString('#00aaff38'),
+            dashLength: 10,
+          }),
+          arcType: Cesium.ArcType.NONE,
+          clampToGround: false,
+        },
+      });
+    }
+
     const entity = viewer.entities.add({
-      id: `sat-${point.id}`,
+      id: `sat-${id}`,
       position: pos,
       point: {
         pixelSize:       15,
-        color:           pointColor,
+        color:           classifyPointColor(meta),
         outlineColor:    Cesium.Color.fromCssColorString('#003366'),
         outlineWidth:    1,
         scaleByDistance: new Cesium.NearFarScalar(1e5, 2, 1e7, 0.8),
@@ -303,27 +380,41 @@ async function initSatellitesServerSnapshot(viewer) {
       shadowgridType: 'satellite',
       shadowgridMeta: {
         name: point.name,
-        application,
-        isMilitary,
+        application: meta.application,
+        isMilitary: meta.isMilitary,
         crewedStatus: meta.crewedStatus,
         provider: 'server-snapshot',
       },
-      show: enabledLocal,
+      properties: {
+        type: 'satellite',
+        name: point.name,
+        provider: point.source ?? 'server-snapshot',
+        isMilitary: meta.isMilitary,
+        orbitType: meta.orbitType ?? 'Unknown',
+        application: meta.application ?? 'Unknown',
+        crewedStatus: meta.crewedStatus ?? 'Unknown',
+      },
+      show: false,
     });
-    entities.set(point.id, entity);
+
+    const record = { entity, trackEntity, satrec, meta };
+    entities.set(id, record);
+    applyEntityVisibility(record);
   }
 
   function applySnapshot(points) {
     const seen = new Set();
     for (const p of points) {
       if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon) || !Number.isFinite(p.altM)) continue;
-      seen.add(p.id);
+      const pointId = String(p.id ?? p.name ?? `${p.lat}:${p.lon}`);
+      seen.add(pointId);
       upsertPoint(p);
     }
 
-    for (const [id, entity] of entities) {
+    for (const [id, record] of entities) {
       if (!seen.has(id)) {
-        viewer.entities.remove(entity);
+        viewer.entities.remove(record.entity);
+        if (record.trackEntity) viewer.entities.remove(record.trackEntity);
         entities.delete(id);
       }
     }
@@ -341,16 +432,55 @@ async function initSatellitesServerSnapshot(viewer) {
     },
   });
 
+  function isCartesianOnScreen(cartesian) {
+    if (!cartesian) return false;
+    const windowPos = viewer.scene.cartesianToCanvasCoordinates(cartesian);
+    if (!windowPos) return false;
+    const width = viewer.canvas.clientWidth || viewer.canvas.width;
+    const height = viewer.canvas.clientHeight || viewer.canvas.height;
+    return windowPos.x >= 0 && windowPos.x <= width && windowPos.y >= 0 && windowPos.y <= height;
+  }
+
+  setInterval(() => {
+    if (!enabledLocal) return;
+    const now = new Date();
+    for (const record of entities.values()) {
+      if (!record.satrec) continue;
+
+      const pv = satellite.propagate(record.satrec, now);
+      if (pv?.position) {
+        const nextPos = eciToCartesian(pv.position, now);
+        // Keep visible satellites moving smoothly between server snapshots.
+        if (isCartesianOnScreen(nextPos)) {
+          record.entity.position = nextPos;
+        }
+      }
+
+      if (!record.trackEntity) continue;
+      if (now.getSeconds() % 30 !== 0) continue;
+      const positions = computeGroundTrack(record.satrec, now);
+      record.trackEntity.polyline.positions = new Cesium.ConstantProperty(positions);
+    }
+  }, PROPAGATE_MS);
+
   return {
     setEnabled(val) {
       enabledLocal = val;
+      enabled = val;
       setServerSnapshotLayerEnabled('satellites', enabledLocal);
-      entities.forEach(entity => {
-        entity.show = enabledLocal;
+      syncServerSnapshotSatelliteConfig();
+      entities.forEach((record) => {
+        applyEntityVisibility(record);
       });
     },
-    setClassificationFilter(_classification, _enabled) {
-      // Not supported in snapshot mode yet.
+    setClassificationFilter(classification, isEnabled) {
+      const key = classification.toLowerCase();
+      if (!(key in classificationFilters)) return;
+      classificationFilters[key] = !!isEnabled;
+      syncServerSnapshotSatelliteConfig();
+      entities.forEach((record) => {
+        applyEntityVisibility(record);
+      });
     },
     get count() {
       return entities.size;

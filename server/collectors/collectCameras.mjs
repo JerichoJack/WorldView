@@ -4,9 +4,10 @@
  * Downloads all public camera-data JSON files from their source feeds,
  * normalises them to a compact schema, and writes:
  *
- *   public/camera-data/cameras.json      — full normalised array (~135 k entries)
- *   public/camera-data/cameras-lite.json — compact array (id,a,o,u) for fast globe load
- *   public/camera-data/meta.json         — source stats + timestamp
+ *   public/camera-data/cameras.json        — full normalised array (~135 k entries)
+ *   public/camera-data/cameras-lite.json  — compact array (id,a,o,u,t,s) for tile rendering
+ *   public/camera-data/cameras-globe.json — minimal [lat,lng,typeIdx] tuples for globe coverage
+ *   public/camera-data/meta.json          — source stats + timestamp
  *
  * Usage:
  *   node server/collectors/collectCameras.mjs
@@ -360,6 +361,21 @@ async function main() {
   const litePath = path.join(OUT_DIR, 'cameras-lite.json');
   fs.writeFileSync(litePath, JSON.stringify(lite));
   console.log(`  → ${litePath}  (${(fs.statSync(litePath).size / 1024 / 1024).toFixed(1)} MB)`);
+
+  // ── Globe positions cache — [lat4, lng4, typeIdx] tuples ──────────────────
+  // Compact file used for full-globe CCTV coverage visualisation at high altitude.
+  // typeIdx: 0=image  1=video  2=hybrid
+  // Only changes when the camera list is rebuilt — browser caches it permanently.
+  const T_IDX = { i: 0, v: 1, h: 2 };
+  const globe = {
+    v:  1,
+    ts: new Date().toISOString(),
+    n:  lite.length,
+    d:  lite.map(c => [+c.a.toFixed(4), +c.o.toFixed(4), T_IDX[c.t] ?? 0]),
+  };
+  const globePath = path.join(OUT_DIR, 'cameras-globe.json');
+  fs.writeFileSync(globePath, JSON.stringify(globe));
+  console.log(`  → ${globePath}  (${(fs.statSync(globePath).size / 1024 / 1024).toFixed(1)} MB)`);
 
   // ── Spatial tile index — 5°×5° tiles ──────────────────────────────────────
   const TILE_DEG = 5;

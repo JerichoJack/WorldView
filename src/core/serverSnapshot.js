@@ -6,6 +6,7 @@ const SNAPSHOT_POLL_MS = 2_000;
 const CAMERA_THROTTLE_MS = 350;
 const SATELLITE_MAX_OBJECTS = Math.max(parseInt(import.meta.env.VITE_SATELLITE_MAX_OBJECTS ?? '99999', 10) || 99999, 1);
 const CAMERA_MAX_OBJECTS = Math.max(parseInt(import.meta.env.VITE_SERVER_CAMERA_MAX_OBJECTS ?? '3000', 10) || 3000, 1);
+const SATELLITE_MAX_PER_CATEGORY = Math.max(parseInt(import.meta.env.VITE_SATELLITE_MAX_PER_CATEGORY ?? `${SATELLITE_MAX_OBJECTS}`, 10) || SATELLITE_MAX_OBJECTS, 1);
 
 let viewer = null;
 let pollTimer = null;
@@ -16,6 +17,10 @@ let lastError = null;
 
 const subscribers = new Map();
 const activeLayers = new Set();
+const satelliteSnapshotConfig = {
+  categories: [],
+  perCategory: SATELLITE_MAX_PER_CATEGORY,
+};
 
 function publishDiagnostics(payload = null, error = null) {
   if (typeof window === 'undefined') return;
@@ -81,6 +86,8 @@ function buildSnapshotUrl() {
 
   if (activeLayers.has('satellites')) {
     params.set('satMax', `${SATELLITE_MAX_OBJECTS}`);
+    params.set('satPerCategory', `${satelliteSnapshotConfig.perCategory}`);
+    params.set('satCategories', satelliteSnapshotConfig.categories.length > 0 ? satelliteSnapshotConfig.categories.join(',') : '__none__');
   }
   if (activeLayers.has('cameras')) {
     params.set('camMax', `${CAMERA_MAX_OBJECTS}`);
@@ -203,4 +210,24 @@ export function getLastServerSnapshotDiagnostics() {
 
 export function isServerSnapshotMode() {
   return SERVER_HEAVY_MODE;
+}
+
+export function setServerSnapshotSatelliteConfig(config = {}) {
+  if (!SERVER_HEAVY_MODE) return;
+
+  const categories = Array.isArray(config.categories)
+    ? config.categories.filter(Boolean).map(String).map(v => v.toLowerCase())
+    : null;
+  const perCategoryRaw = Number.parseInt(config.perCategory, 10);
+
+  if (categories) {
+    satelliteSnapshotConfig.categories = [...new Set(categories)];
+  }
+  if (Number.isFinite(perCategoryRaw) && perCategoryRaw > 0) {
+    satelliteSnapshotConfig.perCategory = perCategoryRaw;
+  }
+
+  if (activeLayers.has('satellites')) {
+    requestServerSnapshotRefresh();
+  }
 }
