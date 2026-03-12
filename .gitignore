@@ -10,3 +10,4 @@ opensky_api_credentials.json
 
 # Generated camera database (rebuild with: node server/collectors/collectCameras.mjs)
 public/camera-data/
+server/cache/world-snapshot-cache.json

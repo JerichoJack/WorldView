@@ -302,7 +302,9 @@ ShadowGrid/
 - ⬜ Phase 4 — Visual shaders (NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
 - ✅ Phase 5 — Street traffic system (Google live traffic + OSM fallback)
 - ✅ Phase 6 — CCTV tiled camera layer + live snapshot/video inspection panel
-- ⬜ Phase 7 — 4D timeline + data archival / replay
+- ⬜ Phase 7 — airspace/TFR polygons, GPS jamming, internet outage markers
+- ⬜ Phase 8 — Replace ad hoc live caching with a proper spatial store.
+- ⬜ Phase 9 — 4D timeline + data archival / replay
 
 ---
 
