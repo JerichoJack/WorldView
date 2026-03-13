@@ -289,11 +289,27 @@ async function fetchSource(s, idx, total) {
   const label = `[${String(idx+1).padStart(3)}/${total}] ${s.name}`;
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'ShadowGrid-Collector/1.0' },
+      headers: {
+        'User-Agent': 'ShadowGrid-Collector/1.0',
+        'Accept': 'application/json,text/plain,*/*',
+      },
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    const bodyText = await res.text();
+    if (bodyText.trim().startsWith('<!DOCTYPE') || bodyText.trim().startsWith('<html')) {
+      throw new Error('Upstream returned HTML instead of JSON (feed missing, moved, or blocked)');
+    }
+
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      const snippet = bodyText.slice(0, 120).replace(/\s+/g, ' ').trim();
+      throw new Error(`Invalid JSON response${contentType ? ` (${contentType})` : ''}${snippet ? `: ${snippet}` : ''}`);
+    }
+
     const raw  = Array.isArray(data) ? data : (data.cameras ?? []);
     const cams = raw.map(c => normalise(c, s.source)).filter(Boolean);
     console.log(`  ✓ ${label}  →  ${cams.length} cameras`);
