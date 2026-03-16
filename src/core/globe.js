@@ -13,6 +13,7 @@ const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').to
 const GOOGLE_KEY   =  import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const CESIUM_TOKEN =  import.meta.env.VITE_CESIUM_ION_TOKEN    ?? '';
 const MAPTILER_KEY =  import.meta.env.VITE_MAPTILER_API_KEY    ?? '';
+const DAYNIGHT_ENABLED = (import.meta.env.VITE_DAYNIGHT_ENABLED ?? 'true').toLowerCase() !== 'false';
 const DAYNIGHT_TIME_MODE = (import.meta.env.VITE_DAYNIGHT_TIME_MODE ?? 'realtime').toLowerCase();
 const DAYNIGHT_TIME_MULTIPLIER = Number(import.meta.env.VITE_DAYNIGHT_TIME_MULTIPLIER ?? '240');
 const DYNAMIC_LABELS_ENABLED = (import.meta.env.VITE_DYNAMIC_LABELS ?? 'true').toLowerCase() !== 'false';
@@ -72,27 +73,29 @@ function applySceneSettings(viewer) {
   const scene = viewer.scene;
   scene.backgroundColor                = Cesium.Color.BLACK;
   scene.fog.enabled                    = false;
-  scene.globe.enableLighting           = true;
-  scene.globe.dynamicAtmosphereLighting = true;
-  scene.globe.dynamicAtmosphereLightingFromSun = true;
-  scene.globe.showGroundAtmosphere     = true;
-  scene.skyAtmosphere.show             = true;
+  scene.globe.enableLighting           = DAYNIGHT_ENABLED;
+  scene.globe.dynamicAtmosphereLighting = DAYNIGHT_ENABLED;
+  scene.globe.dynamicAtmosphereLightingFromSun = DAYNIGHT_ENABLED;
+  scene.globe.showGroundAtmosphere     = DAYNIGHT_ENABLED;
+  scene.skyAtmosphere.show             = DAYNIGHT_ENABLED;
   scene.globe.depthTestAgainstTerrain  = true;
   scene.postProcessStages.fxaa.enabled = true;
 
-  // Use real UTC by default so the terminator matches current time accurately.
-  // Optional cinematic mode can be enabled via env vars when desired.
-  if (DAYNIGHT_TIME_MODE === 'accelerated') {
-    viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
-    viewer.clock.multiplier = Number.isFinite(DAYNIGHT_TIME_MULTIPLIER)
-      ? DAYNIGHT_TIME_MULTIPLIER
-      : 240;
-    viewer.clock.shouldAnimate = true;
-  } else {
-    viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK;
-    viewer.clock.multiplier = 1;
-    viewer.clock.shouldAnimate = true;
-    viewer.clock.currentTime = Cesium.JulianDate.now();
+  if (DAYNIGHT_ENABLED) {
+    // Use real UTC by default so the terminator matches current time accurately.
+    // Optional cinematic mode can be enabled via env vars when desired.
+    if (DAYNIGHT_TIME_MODE === 'accelerated') {
+      viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+      viewer.clock.multiplier = Number.isFinite(DAYNIGHT_TIME_MULTIPLIER)
+        ? DAYNIGHT_TIME_MULTIPLIER
+        : 240;
+      viewer.clock.shouldAnimate = true;
+    } else {
+      viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK;
+      viewer.clock.multiplier = 1;
+      viewer.clock.shouldAnimate = true;
+      viewer.clock.currentTime = Cesium.JulianDate.now();
+    }
   }
 
   // ── Google Earth-style camera controls ───────────────────────────────────
