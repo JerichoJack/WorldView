@@ -132,13 +132,16 @@ const DEFAULT_CLASSIFICATION_ENABLED = !SERVER_HEAVY_MODE;
 
 // Classification filter state — normal mode defaults to on, heavy mode defaults to off.
 const classificationFilters = {
-  military: DEFAULT_CLASSIFICATION_ENABLED,
-  crewed: DEFAULT_CLASSIFICATION_ENABLED,
-  communication: DEFAULT_CLASSIFICATION_ENABLED,
-  earthobservation: DEFAULT_CLASSIFICATION_ENABLED,
+  internet: DEFAULT_CLASSIFICATION_ENABLED,
+  communications: DEFAULT_CLASSIFICATION_ENABLED,
+  earth_observation: DEFAULT_CLASSIFICATION_ENABLED,
   navigation: DEFAULT_CLASSIFICATION_ENABLED,
-  astronomical: DEFAULT_CLASSIFICATION_ENABLED,
-  unknown: DEFAULT_CLASSIFICATION_ENABLED,
+  military: DEFAULT_CLASSIFICATION_ENABLED,
+  weather: DEFAULT_CLASSIFICATION_ENABLED,
+  scientific: DEFAULT_CLASSIFICATION_ENABLED,
+  rocket: DEFAULT_CLASSIFICATION_ENABLED,
+  debris: DEFAULT_CLASSIFICATION_ENABLED,
+  other: DEFAULT_CLASSIFICATION_ENABLED,
 };
 
 /**
@@ -148,18 +151,26 @@ function shouldShowSatellite(meta) {
   if (!enabled) return false;
 
   const filterKey = classificationKeyForMeta(meta);
-  return classificationFilters[filterKey] ?? classificationFilters.unknown;
+  return classificationFilters[filterKey] ?? classificationFilters.other;
 }
 
 function classificationKeyForMeta(meta = {}) {
-  if (meta.isMilitary) return 'military';
-  if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+  const rawName = String(meta.rawName ?? meta.name ?? '').toUpperCase();
   const app = (meta.application ?? 'Unknown').toLowerCase();
-  if (app === 'earth observation') return 'earthobservation';
-  if (app === 'communication') return 'communication';
+  const isCrewed = (meta.crewedStatus ?? '').toLowerCase() === 'crewed';
+
+  if (/\bDEB\b|DEBRIS|FRAGMENT/.test(rawName)) return 'debris';
+  if (/\bR\/B\b|ROCKET BODY|UPPER STAGE|FREGAT|BREEZE-M|CENTAUR|DELTA\s+STAGE/.test(rawName)) return 'rocket';
+  if (meta.isMilitary) return 'military';
+  if (app === 'weather' || /NOAA|METEOR|GOES|HIMAWARI|METOP|WEATHER/.test(rawName)) return 'weather';
+  if (app === 'earth observation') return 'earth_observation';
   if (app === 'navigation') return 'navigation';
-  if (app === 'astronomical') return 'astronomical';
-  return 'unknown';
+  if (app === 'astronomical' || isCrewed) return 'scientific';
+  if (app === 'communication') {
+    if (/STARLINK|ONEWEB|KUIPER|O3B|TDRS|SATCOM/.test(rawName)) return 'internet';
+    return 'communications';
+  }
+  return 'other';
 }
 
 function getEnabledSatelliteCategories() {
@@ -264,24 +275,24 @@ async function initSatellitesServerSnapshot(viewer) {
   }
 
   function classifyPointColor(meta) {
-    if (meta.isMilitary) {
-      return Cesium.Color.fromCssColorString('#ff3b30');
-    }
-    if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') {
-      return Cesium.Color.fromCssColorString('#00ff66');
-    }
-    switch (meta.application ?? 'Unknown') {
-      case 'Communication': return Cesium.Color.fromCssColorString('#ffea00');
-      case 'Earth Observation': return Cesium.Color.fromCssColorString('#ff9800');
-      case 'Navigation': return Cesium.Color.fromCssColorString('#9c27b0');
-      case 'Astronomical': return Cesium.Color.fromCssColorString('#e91e63');
-      default: return Cesium.Color.fromCssColorString('#00aaff');
+    switch (classificationKeyForMeta(meta)) {
+      case 'internet': return Cesium.Color.fromCssColorString('#4ade80');
+      case 'communications': return Cesium.Color.fromCssColorString('#60a5fa');
+      case 'earth_observation': return Cesium.Color.fromCssColorString('#22d3ee');
+      case 'navigation': return Cesium.Color.fromCssColorString('#a78bfa');
+      case 'military': return Cesium.Color.fromCssColorString('#f87171');
+      case 'weather': return Cesium.Color.fromCssColorString('#f59e0b');
+      case 'scientific': return Cesium.Color.fromCssColorString('#f472b6');
+      case 'rocket': return Cesium.Color.fromCssColorString('#9ca3af');
+      case 'debris': return Cesium.Color.fromCssColorString('#6b7280');
+      default: return Cesium.Color.fromCssColorString('#cbd5e1');
     }
   }
 
   function buildSnapshotMeta(point) {
     if (point?.meta && typeof point.meta === 'object') {
       return {
+        rawName: point.name ?? point.meta.rawName ?? 'Unknown',
         isMilitary: point.meta.isMilitary === true,
         application: point.meta.application ?? 'Unknown',
         crewedStatus: point.meta.crewedStatus ?? 'Uncrewed',
@@ -694,7 +705,7 @@ function deriveSatelliteMeta(name, line2) {
   const crewedStatus = classifyCrewedStatus(upperName);
   const orbitType = classifyOrbitType(line2);
 
-  return { isMilitary, application, crewedStatus, orbitType };
+  return { isMilitary, application, crewedStatus, orbitType, rawName: name ?? '' };
 }
 
 function classifyMilitaryStatus(upperName) {
@@ -733,6 +744,11 @@ function classifySatelliteApplication(upperName) {
     'FERMI', 'TESS', 'KEPLER', 'GAIA', 'EUCLID', 'ASTRO',
   ];
   if (astronomical.some(k => upperName.includes(k))) return 'Astronomical';
+
+  const weather = [
+    'NOAA', 'METEOR', 'METOP', 'GOES', 'HIMAWARI', 'WEATHER',
+  ];
+  if (weather.some(k => upperName.includes(k))) return 'Weather';
 
   const navigation = [
     'GPS', 'NAVSTAR', 'GLONASS', 'GALILEO', 'BEIDOU',
@@ -797,35 +813,22 @@ function addSatelliteEntity(viewer, name, satrec, meta = {}) {
   const posVel = satellite.propagate(satrec, now);
   if (!posVel.position) return;
 
-  const isMilitary = meta.isMilitary === true;
-  const isCrewed = (meta.crewedStatus ?? '').toLowerCase() === 'crewed';
-  const application = meta.application ?? 'Unknown';
+  const colorMap = {
+    internet: '#4ade80',
+    communications: '#60a5fa',
+    earth_observation: '#22d3ee',
+    navigation: '#a78bfa',
+    military: '#f87171',
+    weather: '#f59e0b',
+    scientific: '#f472b6',
+    rocket: '#9ca3af',
+    debris: '#6b7280',
+    other: '#cbd5e1',
+  };
+  const category = classificationKeyForMeta({ ...meta, rawName: name });
+  const pointColor = Cesium.Color.fromCssColorString(colorMap[category] ?? colorMap.other);
 
-  let pointColor;
-  if (isMilitary) {
-    pointColor = Cesium.Color.fromCssColorString('#ff3b30'); // red
-  } else if (isCrewed) {
-    pointColor = Cesium.Color.fromCssColorString('#00ff66'); // green
-  } else {
-    // Color by application type
-    switch (application) {
-      case 'Communication':
-        pointColor = Cesium.Color.fromCssColorString('#ffea00'); // yellow
-        break;
-      case 'Earth Observation':
-        pointColor = Cesium.Color.fromCssColorString('#ff9800'); // orange
-        break;
-      case 'Navigation':
-        pointColor = Cesium.Color.fromCssColorString('#9c27b0'); // purple
-        break;
-      case 'Astronomical':
-        pointColor = Cesium.Color.fromCssColorString('#e91e63'); // pink
-        break;
-      default:
-        pointColor = Cesium.Color.fromCssColorString('#00aaff'); // cyan
-        break;
-    }
-  }
+  const isMilitary = meta.isMilitary === true;
 
   const initPos        = eciToCartesian(posVel.position, now);
   const trackPositions = computeGroundTrack(satrec, now);

@@ -876,6 +876,9 @@ function classifySatelliteApplication(upperName) {
   const astronomical = ['HUBBLE', 'JWST', 'JAMES WEBB', 'CHANDRA', 'XMM', 'FERMI', 'TESS', 'KEPLER', 'GAIA', 'EUCLID', 'ASTRO'];
   if (astronomical.some(k => upperName.includes(k))) return 'Astronomical';
 
+  const weather = ['NOAA', 'METEOR', 'METOP', 'GOES', 'HIMAWARI', 'WEATHER'];
+  if (weather.some(k => upperName.includes(k))) return 'Weather';
+
   const navigation = ['GPS', 'NAVSTAR', 'GLONASS', 'GALILEO', 'BEIDOU', 'QZSS', 'IRNSS', 'NAVIC', 'EGNOS', 'WAAS'];
   if (navigation.some(k => upperName.includes(k))) return 'Navigation';
 
@@ -918,6 +921,7 @@ function classifySatelliteOrbitType(line2 = '') {
 function deriveSatelliteMeta(name, line2) {
   const upperName = String(name ?? '').toUpperCase();
   return {
+    rawName: name ?? '',
     isMilitary: classifySatelliteMilitaryStatus(upperName),
     application: classifySatelliteApplication(upperName),
     crewedStatus: classifySatelliteCrewedStatus(upperName),
@@ -926,14 +930,21 @@ function deriveSatelliteMeta(name, line2) {
 }
 
 function categoryForSatelliteMeta(meta) {
+  const rawName = String(meta?.rawName ?? '').toUpperCase();
+  if (/\bDEB\b|DEBRIS|FRAGMENT/.test(rawName)) return 'debris';
+  if (/\bR\/B\b|ROCKET BODY|UPPER STAGE|FREGAT|BREEZE-M|CENTAUR|DELTA\s+STAGE/.test(rawName)) return 'rocket';
   if (meta?.isMilitary) return 'military';
-  if ((meta?.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+
   const app = (meta?.application ?? 'unknown').toLowerCase();
-  if (app === 'earth observation') return 'earthobservation';
-  if (app === 'communication') return 'communication';
+  if (app === 'weather' || /NOAA|METEOR|GOES|HIMAWARI|METOP|WEATHER/.test(rawName)) return 'weather';
+  if (app === 'earth observation') return 'earth_observation';
+  if (app === 'communication') {
+    if (/STARLINK|ONEWEB|KUIPER|O3B|TDRS|SATCOM/.test(rawName)) return 'internet';
+    return 'communications';
+  }
   if (app === 'navigation') return 'navigation';
-  if (app === 'astronomical') return 'astronomical';
-  return 'unknown';
+  if (app === 'astronomical' || (meta?.crewedStatus ?? '').toLowerCase() === 'crewed') return 'scientific';
+  return 'other';
 }
 
 async function ensureSatelliteCatalog() {

@@ -1438,20 +1438,23 @@ function zoneHtml({
 // Classification colors — must match flights.js
 function normalizeAircraftClassification(classification, dbFlags, callsign) {
   const normalized = (classification ?? '').toLowerCase();
-  if (normalized === 'military' || normalized === 'commercial' || normalized === 'other') {
+  if (normalized === 'military' || normalized === 'commercial' || normalized === 'emergency' || normalized === 'ground') {
     return normalized;
   }
+  const sq = String(classification ?? '').trim();
+  if (sq === '7500' || sq === '7600' || sq === '7700') return 'emergency';
   if ((dbFlags ?? 0) & 1) return 'military';
   const cs = (callsign ?? '').toUpperCase();
   if (/^[A-Z]{2,3}\d{1,4}[A-Z]?$/.test(cs)) return 'commercial';
-  return 'other';
+  return 'commercial';
 }
 
 function aircraftClassColor(classification, dbFlags, callsign) {
   const c = normalizeAircraftClassification(classification, dbFlags, callsign);
-  if (c === 'military') return '#f44336';
-  if (c === 'commercial') return '#00e676';
-  return '#ffa726';
+  if (c === 'emergency') return '#ef4444';
+  if (c === 'military') return '#f97316';
+  if (c === 'ground') return '#6b7280';
+  return '#60a5fa';
 }
 function aircraftClassLabel(classification, dbFlags, callsign) {
   return normalizeAircraftClassification(classification, dbFlags, callsign).toUpperCase();

@@ -443,21 +443,12 @@
       <div class="filter-container collapsed" data-filter-group="flights">
         <div style="display: flex; gap: 4px; width: 100%; margin-bottom: 2px;">
           <span style="font-size: 7px; color: rgba(0,255,136,0.4); align-self: center;">Classification:</span>
-          <button class="filter-btn active" data-filter="flights-classification:military">Military</button>
           <button class="filter-btn active" data-filter="flights-classification:commercial">Commercial</button>
-          <button class="filter-btn active" data-filter="flights-classification:other">Other</button>
+          <button class="filter-btn active" data-filter="flights-classification:military">Military</button>
+          <button class="filter-btn active" data-filter="flights-classification:emergency">Emergency</button>
+          <button class="filter-btn active" data-filter="flights-classification:ground">On Ground</button>
           <button class="filter-btn active" data-filter="flights-overlay:gps">GPS</button>
           <button class="filter-btn active" data-filter="flights-overlay:airspace">Airspace</button>
-        </div>
-        <div style="display: flex; gap: 4px; width: 100%; flex-wrap: wrap;">
-          <span style="font-size: 7px; color: rgba(0,255,136,0.4); width: 100%; margin-bottom: 0px;">Type:</span>
-          <button class="filter-btn active" data-filter="flights-type:heavy">Heavy</button>
-          <button class="filter-btn active" data-filter="flights-type:widebody">Widebody</button>
-          <button class="filter-btn active" data-filter="flights-type:jet">Jet</button>
-          <button class="filter-btn active" data-filter="flights-type:turboprop">Turboprop</button>
-          <button class="filter-btn active" data-filter="flights-type:helicopter">Heli</button>
-          <button class="filter-btn active" data-filter="flights-type:light">Light</button>
-          <button class="filter-btn active" data-filter="flights-type:generic">Generic</button>
         </div>
       </div>
 
@@ -466,13 +457,16 @@
         <span class="dot"></span> Satellites
       </button>
       <div class="filter-container collapsed" data-filter-group="satellites">
+        <button class="filter-btn active" data-filter="satellites:internet">Internet</button>
+        <button class="filter-btn active" data-filter="satellites:communications">Communications</button>
+        <button class="filter-btn active" data-filter="satellites:earth_observation">Earth Obs</button>
+        <button class="filter-btn active" data-filter="satellites:navigation">Navigation</button>
         <button class="filter-btn active" data-filter="satellites:military">Military</button>
-        <button class="filter-btn active" data-filter="satellites:crewed">Crewed</button>
-        <button class="filter-btn active" data-filter="satellites:communication">Comm</button>
-        <button class="filter-btn active" data-filter="satellites:earthobservation">Earth Obs</button>
-        <button class="filter-btn active" data-filter="satellites:navigation">Nav</button>
-        <button class="filter-btn active" data-filter="satellites:astronomical">Astro</button>
-        <button class="filter-btn active" data-filter="satellites:unknown">Unknown</button>
+        <button class="filter-btn active" data-filter="satellites:weather">Weather</button>
+        <button class="filter-btn active" data-filter="satellites:scientific">Scientific</button>
+        <button class="filter-btn active" data-filter="satellites:rocket">Rocket</button>
+        <button class="filter-btn active" data-filter="satellites:debris">Debris</button>
+        <button class="filter-btn active" data-filter="satellites:other">Other</button>
       </div>
 
       <button class="layer-btn inactive" data-layer="traffic">

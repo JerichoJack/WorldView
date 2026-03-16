@@ -319,6 +319,14 @@ function isLikelyCommercialCallsign(cs) {
 }
 
 function classifyAircraft(a) {
+  const squawk = String(a.squawk ?? '').trim();
+  const emergencyCode = ['7500', '7600', '7700'].includes(squawk);
+  const emergencyFlag = String(a.emergency ?? '').toLowerCase();
+  const isEmergency = emergencyCode || (emergencyFlag && emergencyFlag !== 'none');
+  if (isEmergency) return 'emergency';
+
+  if (a.onGround === true) return 'ground';
+
   // 1) Extract reusable evidence signals
   const cs = (a.callsign ?? '').toUpperCase().trim();
   const prefix3 = cs.slice(0, 3);
@@ -350,14 +358,17 @@ function classifyAircraft(a) {
     if (isLikelyCommercialCallsign(cs)) return 'commercial';
   }
 
-  return 'other';
+  return 'commercial';
 }
 
 function classificationColor(classification) {
-  switch ((classification ?? 'other').toLowerCase()) {
-    case 'military': return '#f44336';
-    case 'commercial': return '#00e676';
-    default: return '#ffa726';
+  switch ((classification ?? 'commercial').toLowerCase()) {
+    case 'emergency': return '#ef4444';
+    case 'military': return '#f97316';
+    case 'ground': return '#6b7280';
+    case 'commercial':
+    default:
+      return '#60a5fa';
   }
 }
 
@@ -764,11 +775,12 @@ let noflyGpsPayloadCache = null;
 
 const FLIGHT_ZONE_AGE_RULES = { fadeMs: 6 * 60 * 60 * 1000, expireMs: 48 * 60 * 60 * 1000 };
 
-// Aircraft classification filter state — all enabled by default
+// Aircraft classification filter state — Tarsyu-style categories
 const aircraftClassificationFilters = {
-  military: true,
   commercial: true,
-  other: true,
+  military: true,
+  emergency: true,
+  ground: true,
 };
 
 const flightZoneFilters = {
@@ -800,7 +812,7 @@ function isAnyClassificationActive() {
  */
 function shouldShowFlight(aircraftClassification, aircraftType) {
   if (!enabled) return false;
-  const classKey = (aircraftClassification ?? 'other').toLowerCase();
+  const classKey = (aircraftClassification ?? 'commercial').toLowerCase();
   const typeKey = (aircraftType ?? 'generic').toLowerCase();
   return aircraftClassificationFilters[classKey] && aircraftTypeFilters[typeKey];
 }
@@ -836,7 +848,7 @@ function applyFlatIconVisibility() {
   for (const [id, entity] of entityMap) {
     const state = trackStateMap.get(id);
     const aircraftType = state?.aircraftType ?? 'generic';
-    const aircraftClassification = state?.aircraftClassification ?? 'other';
+    const aircraftClassification = state?.aircraftClassification ?? 'commercial';
     const shouldShow = shouldShowFlight(aircraftClassification, aircraftType) && !hideAllFlatIcons;
     if (entity.billboard) {
       entity.billboard.show = new Cesium.ConstantProperty(shouldShow);
@@ -1126,19 +1138,19 @@ export async function initFlights(viewer) {
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
           const aircraftType = state?.aircraftType ?? 'generic';
-          const aircraftClassification = state?.aircraftClassification ?? 'other';
+          const aircraftClassification = state?.aircraftClassification ?? 'commercial';
           e.show = shouldShowFlight(aircraftClassification, aircraftType);
         });
         applyFlatIconVisibility();
       },
       setAircraftClassificationFilter(classification, filterEnabled) {
-        const classKey = (classification ?? 'other').toLowerCase();
+        const classKey = (classification ?? 'commercial').toLowerCase();
         if (classKey in aircraftClassificationFilters) {
           aircraftClassificationFilters[classKey] = filterEnabled;
           entityMap.forEach((e, icaoHex) => {
             const state = trackStateMap.get(icaoHex);
             const aircraftType = state?.aircraftType ?? 'generic';
-            const aircraftClassification = state?.aircraftClassification ?? 'other';
+            const aircraftClassification = state?.aircraftClassification ?? 'commercial';
             e.show = shouldShowFlight(aircraftClassification, aircraftType);
           });
           applyFlatIconVisibility();
@@ -1153,7 +1165,7 @@ export async function initFlights(viewer) {
           entityMap.forEach((e, icaoHex) => {
             const state = trackStateMap.get(icaoHex);
             const acType = state?.aircraftType ?? 'generic';
-            const acClassification = state?.aircraftClassification ?? 'other';
+            const acClassification = state?.aircraftClassification ?? 'commercial';
             e.show = shouldShowFlight(acClassification, acType);
           });
           applyFlatIconVisibility();
@@ -1196,20 +1208,20 @@ export async function initFlights(viewer) {
       entityMap.forEach((e, icaoHex) => {
         const state = trackStateMap.get(icaoHex);
         const aircraftType = state?.aircraftType ?? 'generic';
-        const aircraftClassification = state?.aircraftClassification ?? 'other';
+        const aircraftClassification = state?.aircraftClassification ?? 'commercial';
         e.show = shouldShowFlight(aircraftClassification, aircraftType);
       });
       applyFlatIconVisibility();
     },
     setAircraftClassificationFilter(classification, filterEnabled) {
-      const classKey = (classification ?? 'other').toLowerCase();
+      const classKey = (classification ?? 'commercial').toLowerCase();
       if (classKey in aircraftClassificationFilters) {
         aircraftClassificationFilters[classKey] = filterEnabled;
         // Update visibility of all entities
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
           const aircraftType = state?.aircraftType ?? 'generic';
-          const aircraftClassification = state?.aircraftClassification ?? 'other';
+          const aircraftClassification = state?.aircraftClassification ?? 'commercial';
           e.show = shouldShowFlight(aircraftClassification, aircraftType);
         });
         applyFlatIconVisibility();
@@ -1228,7 +1240,7 @@ export async function initFlights(viewer) {
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
           const acType = state?.aircraftType ?? 'generic';
-          const acClassification = state?.aircraftClassification ?? 'other';
+          const acClassification = state?.aircraftClassification ?? 'commercial';
           e.show = shouldShowFlight(acClassification, acType);
         });
         applyFlatIconVisibility();
@@ -1261,7 +1273,7 @@ export function setFollowMode(icaoHex, active) {
   if (active) {
     hideAllFlatIcons = true;
     // Derive color from stored properties so military/commercial/other colors match
-    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
     const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
@@ -1453,21 +1465,27 @@ async function fetchReadsbLike(baseUrl, bounds, providerLabel) {
   };
 
   return aircraft
-    .filter(a => a.lat && a.lon && a.alt_baro !== 'ground' && (a.alt_baro ?? 0) > 100)
-    .map(a => ({
+    .filter(a => Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lon)))
+    .map(a => {
+      const onGround = a.alt_baro === 'ground' || a.gnd === true || a.on_ground === true;
+      const altFt = onGround ? 0 : numOr(a.alt_baro ?? a.alt_geom, 0);
+      return {
       id:       (a.hex ?? '').toLowerCase(),
       callsign: (a.flight ?? a.r ?? '').trim(),
       lat:      a.lat,
       lon:      a.lon,
-      altFt:    numOr(a.alt_baro ?? a.alt_geom, 10000),
+      altFt,
       heading:  numOr(a.track ?? a.true_heading, 0),
       kts:      numOr(a.gs, 0),
       category: a.category ?? '',
       typecode: (a.t ?? a.type ?? '').toUpperCase(),
       squawk:   a.squawk ?? '',
+      emergency: a.emergency ?? 'none',
+      onGround,
       dbFlags:  a.dbFlags ?? 0,
       vert:     numOr(a.baro_rate ?? a.geom_rate, 0),
-    }))
+    };
+    })
     .filter(a => a.id);
 }
 
@@ -1497,21 +1515,27 @@ function mapProxyAircraft(aircraft) {
   };
 
   return aircraft
-    .filter(a => a.lat && a.lon && a.alt_baro !== 'ground' && (a.alt_baro ?? 0) > 100)
-    .map(a => ({
+    .filter(a => Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lon)))
+    .map(a => {
+      const onGround = a.alt_baro === 'ground' || a.gnd === true || a.on_ground === true;
+      const altFt = onGround ? 0 : numOr(a.alt_baro ?? a.alt_geom, 0);
+      return {
       id:       (a.hex ?? '').toLowerCase(),
       callsign: (a.flight ?? a.r ?? '').trim(),
       lat:      a.lat,
       lon:      a.lon,
-      altFt:    numOr(a.alt_baro ?? a.alt_geom, 10000),
+      altFt,
       heading:  numOr(a.track ?? a.true_heading, 0),
       kts:      numOr(a.gs, 0),
       category: a.category ?? '',
       typecode: (a.t ?? a.type ?? '').toUpperCase(),
       squawk:   a.squawk ?? '',
+      emergency: a.emergency ?? 'none',
+      onGround,
       dbFlags:  a.dbFlags ?? 0,
       vert:     numOr(a.baro_rate ?? a.geom_rate, 0),
-    }))
+    };
+    })
     .filter(a => a.id);
 }
 
@@ -1525,17 +1549,19 @@ async function fetchOpenSky() {
   if (!resp.ok) throw new Error(`OpenSky ${resp.status}`);
   const data = await resp.json();
   return (data.states ?? [])
-    .filter(s => s[5] && s[6] && !s[8])
+    .filter(s => Number.isFinite(Number(s[5])) && Number.isFinite(Number(s[6])))
     .map(s => ({
       id:       s[0].trim(),
       callsign: (s[1] ?? '').trim(),
       lat:      s[6],
       lon:      s[5],
-      altFt:    (s[7] ?? 3000) * 3.281,
+      altFt:    s[8] ? 0 : (s[7] ?? 3000) * 3.281,
       heading:  s[10] ?? 0,
       kts:      (s[9] ?? 0) * 1.944,
       category: Number.isFinite(Number(s[17])) ? Number(s[17]) : null,
-      squawk:   '',
+      squawk:   s[14] ?? '',
+      emergency: ['7500', '7600', '7700'].includes(String(s[14] ?? '').trim()) ? String(s[14]).trim() : 'none',
+      onGround: s[8] === true,
       vert:     (s[11] ?? 0) * 196.85,  // m/s → ft/min
     }));
 }
@@ -1672,6 +1698,8 @@ function renderAircraft(viewer, aircraft) {
         setProp(entity.properties, 'kts', a.kts);
         setProp(entity.properties, 'heading', a.heading);
         setProp(entity.properties, 'squawk', a.squawk);
+        setProp(entity.properties, 'emergency', a.emergency ?? 'none');
+        setProp(entity.properties, 'onGround', !!a.onGround);
         setProp(entity.properties, 'dbFlags', a.dbFlags);
         setProp(entity.properties, 'vert', a.vert);
         setProp(entity.properties, 'category', a.category);
@@ -1718,6 +1746,8 @@ function renderAircraft(viewer, aircraft) {
           kts:            a.kts,
           heading:        a.heading,
           squawk:         a.squawk,
+          emergency:      a.emergency ?? 'none',
+          onGround:       !!a.onGround,
           dbFlags:        a.dbFlags,
           vert:           a.vert,
           category:       a.category,
@@ -1821,7 +1851,7 @@ export function setFlightGlow(icaoHex, active) {
   if (active) {
     selectedFlightId = id;
     // Get current color and shape from stored properties
-    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
     const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
@@ -1835,7 +1865,7 @@ export function setFlightGlow(icaoHex, active) {
   } else {
     if (selectedFlightId === id) selectedFlightId = null;
     // Restore normal icon
-    const classification = entity.properties?.classification?.getValue?.() ?? 'other';
+    const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
     const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
