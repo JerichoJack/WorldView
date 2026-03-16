@@ -166,6 +166,9 @@ export function setOrbitalMode(viewer, enabled) {
     ctrl.translateEventTypes = [];
     ctrl.enableTranslate = false;
     state.orbital = true;
+    window.dispatchEvent(new CustomEvent('shadowgrid:camera-orbital-mode', {
+      detail: { enabled: true },
+    }));
     return true;
   }
 
@@ -175,6 +178,9 @@ export function setOrbitalMode(viewer, enabled) {
   ctrl.lookEventTypes = cloneEventTypes(state.base.lookEventTypes);
   ctrl.enableTranslate = state.base.enableTranslate;
   state.orbital = false;
+  window.dispatchEvent(new CustomEvent('shadowgrid:camera-orbital-mode', {
+    detail: { enabled: false },
+  }));
   return false;
 }
 

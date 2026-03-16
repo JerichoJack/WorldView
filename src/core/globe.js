@@ -154,25 +154,87 @@ function applySceneSettings(viewer) {
 
 async function addLabelsOverlay(viewer) {
   try {
-    // Use public Stamen Toner overlays via Stadia instead of ion asset 3812,
-    // which now returns 404 in some accounts/regions.
-    viewer.imageryLayers.addImageryProvider(
+    // Progressive labels stack:
+    // - hide labels at globe-scale altitudes
+    // - show country/state first
+    // - add cities, then major streets, then minor streets as altitude decreases
+    const boundaries = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
         url:    'https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png',
         credit: '© Stadia Maps © Stamen Design © OpenStreetMap contributors',
         minimumLevel: 0,
-        maximumLevel: 20,
+        maximumLevel: 13,
       })
     );
-    viewer.imageryLayers.addImageryProvider(
+
+    const countryState = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
-        url:    'https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png',
-        credit: '© Stadia Maps © Stamen Design © OpenStreetMap contributors',
+        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
+        credit: '© OpenStreetMap contributors © CARTO',
         minimumLevel: 0,
+        maximumLevel: 6,
+      })
+    );
+
+    const cityLabels = viewer.imageryLayers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
+        credit: '© OpenStreetMap contributors © CARTO',
+        minimumLevel: 6,
+        maximumLevel: 11,
+      })
+    );
+
+    const majorStreetLabels = viewer.imageryLayers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
+        credit: '© OpenStreetMap contributors © CARTO',
+        minimumLevel: 11,
+        maximumLevel: 14,
+      })
+    );
+
+    const minorStreetLabels = viewer.imageryLayers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
+        credit: '© OpenStreetMap contributors © CARTO',
+        minimumLevel: 14,
         maximumLevel: 20,
       })
     );
-    console.info('[ShadowGrid] Labels + borders overlay added ✓');
+
+    const LABEL_HEIGHT = {
+      hideAllAbove:      9_000_000,
+      showCountryBelow:  4_500_000,
+      showCityBelow:     1_500_000,
+      showMajorBelow:      260_000,
+      showMinorBelow:       60_000,
+    };
+
+    let orbitalSuppressed = false;
+
+    function syncLabelVisibility() {
+      const h = viewer.camera.positionCartographic?.height ?? Number.POSITIVE_INFINITY;
+      const allowAny = h <= LABEL_HEIGHT.hideAllAbove;
+      const visible = allowAny && !orbitalSuppressed;
+
+      boundaries.show = visible;
+      countryState.show = visible && h <= LABEL_HEIGHT.showCountryBelow;
+      cityLabels.show = visible && h <= LABEL_HEIGHT.showCityBelow;
+      majorStreetLabels.show = visible && h <= LABEL_HEIGHT.showMajorBelow;
+      minorStreetLabels.show = visible && h <= LABEL_HEIGHT.showMinorBelow;
+    }
+
+    window.addEventListener('shadowgrid:camera-orbital-mode', (ev) => {
+      orbitalSuppressed = !!ev?.detail?.enabled;
+      syncLabelVisibility();
+    });
+
+    viewer.camera.changed.addEventListener(syncLabelVisibility);
+    viewer.camera.moveEnd.addEventListener(syncLabelVisibility);
+    syncLabelVisibility();
+
+    console.info('[ShadowGrid] Dynamic labels + borders overlay added ✓');
   } catch (err) {
     console.warn('[ShadowGrid] Labels overlay unavailable:', err.message);
   }
