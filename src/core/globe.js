@@ -15,6 +15,7 @@ const CESIUM_TOKEN =  import.meta.env.VITE_CESIUM_ION_TOKEN    ?? '';
 const MAPTILER_KEY =  import.meta.env.VITE_MAPTILER_API_KEY    ?? '';
 const DAYNIGHT_TIME_MODE = (import.meta.env.VITE_DAYNIGHT_TIME_MODE ?? 'realtime').toLowerCase();
 const DAYNIGHT_TIME_MULTIPLIER = Number(import.meta.env.VITE_DAYNIGHT_TIME_MULTIPLIER ?? '240');
+const DYNAMIC_LABELS_ENABLED = (import.meta.env.VITE_DYNAMIC_LABELS ?? 'true').toLowerCase() !== 'false';
 
 const GOOGLE_TILESET_URL = SERVER_HEAVY_MODE
   ? '/api/localproxy/tiles/google/v1/3dtiles/root.json'
@@ -153,62 +154,36 @@ function applySceneSettings(viewer) {
 // Uses Cesium ion asset 3812 (Cesium OSM Labels) — free, no extra key needed.
 
 async function addLabelsOverlay(viewer) {
+  if (!DYNAMIC_LABELS_ENABLED) {
+    console.info('[ShadowGrid] Dynamic labels disabled by VITE_DYNAMIC_LABELS=false');
+    return;
+  }
+
   try {
-    // Progressive labels stack:
-    // - hide labels at globe-scale altitudes
-    // - show country/state first
-    // - add cities, then major streets, then minor streets as altitude decreases
+    // Use one adaptive label source (which naturally increases detail by zoom)
+    // and toggle visibility by altitude to avoid overloading lower-end GPUs.
     const boundaries = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
         url:    'https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png',
         credit: '© Stadia Maps © Stamen Design © OpenStreetMap contributors',
-        minimumLevel: 0,
-        maximumLevel: 13,
+        minimumLevel: 2,
+        maximumLevel: 16,
       })
     );
 
-    const countryState = viewer.imageryLayers.addImageryProvider(
+    const adaptiveLabels = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
         url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
         credit: '© OpenStreetMap contributors © CARTO',
         minimumLevel: 0,
-        maximumLevel: 6,
-      })
-    );
-
-    const cityLabels = viewer.imageryLayers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
-        credit: '© OpenStreetMap contributors © CARTO',
-        minimumLevel: 6,
-        maximumLevel: 11,
-      })
-    );
-
-    const majorStreetLabels = viewer.imageryLayers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
-        credit: '© OpenStreetMap contributors © CARTO',
-        minimumLevel: 11,
-        maximumLevel: 14,
-      })
-    );
-
-    const minorStreetLabels = viewer.imageryLayers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
-        credit: '© OpenStreetMap contributors © CARTO',
-        minimumLevel: 14,
         maximumLevel: 20,
       })
     );
 
     const LABEL_HEIGHT = {
       hideAllAbove:      9_000_000,
-      showCountryBelow:  4_500_000,
-      showCityBelow:     1_500_000,
-      showMajorBelow:      260_000,
-      showMinorBelow:       60_000,
+      showBoundariesBelow: 4_500_000,
+      showLabelsBelow:     2_000_000,
     };
 
     let orbitalSuppressed = false;
@@ -218,11 +193,16 @@ async function addLabelsOverlay(viewer) {
       const allowAny = h <= LABEL_HEIGHT.hideAllAbove;
       const visible = allowAny && !orbitalSuppressed;
 
-      boundaries.show = visible;
-      countryState.show = visible && h <= LABEL_HEIGHT.showCountryBelow;
-      cityLabels.show = visible && h <= LABEL_HEIGHT.showCityBelow;
-      majorStreetLabels.show = visible && h <= LABEL_HEIGHT.showMajorBelow;
-      minorStreetLabels.show = visible && h <= LABEL_HEIGHT.showMinorBelow;
+      boundaries.show = visible && h <= LABEL_HEIGHT.showBoundariesBelow;
+      adaptiveLabels.show = visible && h <= LABEL_HEIGHT.showLabelsBelow;
+
+      // Fade in labels as the camera gets closer for smoother transitions.
+      if (adaptiveLabels.show) {
+        const fadeRange = 350_000;
+        const start = LABEL_HEIGHT.showLabelsBelow;
+        const t = Cesium.Math.clamp((start - h) / fadeRange, 0, 1);
+        adaptiveLabels.alpha = 0.4 + 0.6 * t;
+      }
     }
 
     window.addEventListener('shadowgrid:camera-orbital-mode', (ev) => {
@@ -234,7 +214,7 @@ async function addLabelsOverlay(viewer) {
     viewer.camera.moveEnd.addEventListener(syncLabelVisibility);
     syncLabelVisibility();
 
-    console.info('[ShadowGrid] Dynamic labels + borders overlay added ✓');
+    console.info('[ShadowGrid] Dynamic labels overlay added ✓');
   } catch (err) {
     console.warn('[ShadowGrid] Labels overlay unavailable:', err.message);
   }
