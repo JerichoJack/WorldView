@@ -62,6 +62,7 @@ let _serverCamMap = new Map();  // id -> Cesium.Entity in server-heavy mode
 let _globePoints  = null;       // Cesium.PointPrimitiveCollection — globe-altitude coverage
 let _globeReady   = false;      // cameras-globe.json loaded and points built
 let _selectedCameraId = null;   // currently highlighted camera for visual feedback
+let _streamHealthCache = { ts: 0, data: null }; // cached camera stream health probe
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,28 @@ function videoKind(url) {
   if (/\.m3u8(\?|$)/i.test(url)) return 'hls';
   if (/\.mp4(\?|$)/i.test(url))  return 'mp4';
   return 'other';
+}
+
+/** Route camera streams through local proxy for CORS/auth handling and protocol conversion. */
+function proxiedVideoUrl(url) {
+  if (!url) return null;
+  return `/api/localproxy/api/cameras/stream?url=${encodeURIComponent(url)}`;
+}
+
+async function getCameraStreamHealth() {
+  const now = Date.now();
+  if (_streamHealthCache.data && (now - _streamHealthCache.ts) < 30_000) {
+    return _streamHealthCache.data;
+  }
+  try {
+    const res = await fetch('/api/localproxy/api/cameras/stream/health', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _streamHealthCache = { ts: now, data };
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 /** Tear down any active hls.js instance. */
@@ -129,16 +152,17 @@ function renderPanel(cam) {
     // For sunders-only (source='sunders'): no URLs, show OSM metadata instead
     const hasVideoFlag = cam.t === 'v' || cam.t === 'h';
     const hasImageFlag = cam.t === 'i' || cam.t === 'h';
-    const rawVideoUrl  = hasVideoFlag ? (cam.x || cam.u) : null;     // prefer cam.x for video
-    const kind         = videoKind(rawVideoUrl);
-    const hasPlayableVideo = hasVideoFlag && rawVideoUrl && kind !== 'unsupported';
-    const videoUrl  = hasPlayableVideo ? rawVideoUrl : null;
+    const sourceVideoUrl = hasVideoFlag ? (cam.x || cam.u) : null;     // prefer cam.x for video
+    const kind         = videoKind(sourceVideoUrl);
+    const hasPlayableVideo = hasVideoFlag && sourceVideoUrl && kind !== 'unsupported';
+    const needsServerTranscode = hasVideoFlag && sourceVideoUrl && kind === 'unsupported';
+    const videoUrl  = hasPlayableVideo ? proxiedVideoUrl(sourceVideoUrl) : null;
     const hasImage  = hasImageFlag || !hasPlayableVideo;
     const imageUrl  = hasImage ? freshUrl(cam.u || cam.x) : null;  // fallback to video if no image
     
     // Log debug info for hybrid cameras to troubleshoot STREAM UNAVAILABLE
     if (cam.t === 'h') {
-      console.log(`[CCTV] Hybrid camera ${cam.i}: cam.u=${!!cam.u}, cam.x=${!!cam.x}, videoUrl=${!!videoUrl}`);
+      console.log(`[CCTV] Hybrid camera ${cam.i}: cam.u=${!!cam.u}, cam.x=${!!cam.x}, sourceVideo=${!!sourceVideoUrl}, proxiedVideo=${!!videoUrl}`);
     }
     
     const isSundersOnly = !videoUrl && !imageUrl;
@@ -157,6 +181,11 @@ function renderPanel(cam) {
         <div style="color:rgba(0,255,136,0.45);font-size:9px;margin-bottom:8px;letter-spacing:0.05em">
           ${cam.a.toFixed(5)}° · ${cam.o.toFixed(5)}°
         </div>
+        ${needsServerTranscode ? `
+          <div id="cctv-transcode-note" style="margin-bottom:8px;padding:6px 8px;border:1px solid rgba(255,193,7,0.35);background:rgba(255,193,7,0.08);color:rgba(255,220,120,0.92);font-size:9px;line-height:1.4">
+            Checking server transcoder status...
+          </div>
+        ` : ''}
 
         ${isSundersOnly ? `
           <div style="background:rgba(255,153,0,0.08);border:1px solid rgba(255,153,0,0.25);padding:8px;border-radius:2px;font-size:9px;line-height:1.4;color:rgba(255,153,0,0.8)">
@@ -283,6 +312,28 @@ function renderPanel(cam) {
         if (errEl) errEl.style.display = 'none';
         if (imgEl) imgEl.src = freshUrl(cam.u);
         if (tsEl)  tsEl.textContent = _utcTime();
+      });
+    }
+
+    if (needsServerTranscode) {
+      const transcodeNote = document.getElementById('cctv-transcode-note');
+      getCameraStreamHealth().then((health) => {
+        if (!transcodeNote) return;
+        if (!health) {
+          transcodeNote.textContent = 'Server transcoder status unavailable. Ensure /api/cameras/stream/health is reachable.';
+          return;
+        }
+        if (health.ffmpegAvailable) {
+          transcodeNote.textContent = `Server transcoder ready (ffmpeg detected). Source protocol: ${kind.toUpperCase()}.`;
+          transcodeNote.style.borderColor = 'rgba(0,255,136,0.35)';
+          transcodeNote.style.background = 'rgba(0,255,136,0.08)';
+          transcodeNote.style.color = 'rgba(180,255,220,0.92)';
+        } else {
+          transcodeNote.textContent = `Server transcoder unavailable: ffmpeg not installed. Source protocol: ${kind.toUpperCase()}.`;
+          transcodeNote.style.borderColor = 'rgba(255,100,100,0.35)';
+          transcodeNote.style.background = 'rgba(255,100,100,0.08)';
+          transcodeNote.style.color = 'rgba(255,180,180,0.92)';
+        }
       });
     }
   }

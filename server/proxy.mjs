@@ -21,6 +21,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 import * as satellite from 'satellite.js';
 import { cellToBoundary } from 'h3-js';
 import { feature as topojsonFeature } from 'topojson-client';
@@ -96,8 +97,11 @@ const CAMERA_MAX_POINTS = Math.max(parseInt(process.env.SHADOWGRID_CAMERA_MAX_PO
 const CACHE_DIR = path.resolve(process.cwd(), 'server', 'cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'world-snapshot-cache.json');
 const TILE_CACHE_DIR = path.join(CACHE_DIR, 'tile-http');
+const CAMERA_STREAM_DIR = path.join(CACHE_DIR, 'camera-streams');
 const TILE_CACHE_TTL_MS = 12 * 60 * 60_000;
 const TILE_CACHE_STALE_MS = 7 * 24 * 60 * 60_000;
+const CAMERA_STREAM_IDLE_MS = 2 * 60_000;
+const CAMERA_STREAM_BOOT_TIMEOUT_MS = 8_000;
 let satCatalogTs = 0;
 /** @type {Array<{id:string,name:string,line1:string,line2:string,satrec:any,meta:any,category:string}>} */
 let satCatalog = [];
@@ -106,6 +110,10 @@ let satSnapshotCache = { ts: 0, points: [], source: 'unknown', maxCount: 0, perC
 let openSkyToken = '';
 let openSkyTokenExp = 0;
 const tileFetchInFlight = new Map();
+const cameraStreamSessions = new Map();
+let cameraStreamCleanupTimer = null;
+let ffmpegChecked = false;
+let ffmpegAvailable = false;
 
 const N2YO_SNAPSHOT_TTL_MS = 120_000;
 const N2YO_SAMPLE_POINTS = [
@@ -146,6 +154,286 @@ function ensureTileCacheDir() {
   if (!fs.existsSync(TILE_CACHE_DIR)) {
     fs.mkdirSync(TILE_CACHE_DIR, { recursive: true });
   }
+}
+
+function ensureCameraStreamDir() {
+  if (!fs.existsSync(CAMERA_STREAM_DIR)) {
+    fs.mkdirSync(CAMERA_STREAM_DIR, { recursive: true });
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function guessMimeByName(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
+  if (n.endsWith('.ts')) return 'video/mp2t';
+  if (n.endsWith('.m4s')) return 'video/iso.segment';
+  if (n.endsWith('.mp4')) return 'video/mp4';
+  return 'application/octet-stream';
+}
+
+async function ensureFfmpegAvailable() {
+  if (ffmpegChecked) return ffmpegAvailable;
+  ffmpegChecked = true;
+  ffmpegAvailable = await new Promise((resolve) => {
+    const p = spawn('ffmpeg', ['-version'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+  return ffmpegAvailable;
+}
+
+function startCameraStreamCleanupLoop() {
+  if (cameraStreamCleanupTimer) return;
+  cameraStreamCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, s] of cameraStreamSessions.entries()) {
+      if ((now - s.lastAccess) < CAMERA_STREAM_IDLE_MS) continue;
+      try { s.proc?.kill('SIGTERM'); } catch {}
+      try { fs.rmSync(s.dir, { recursive: true, force: true }); } catch {}
+      cameraStreamSessions.delete(id);
+    }
+  }, 30_000);
+  cameraStreamCleanupTimer.unref?.();
+}
+
+function cameraSessionIdForUrl(url) {
+  return crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+}
+
+function rewriteM3u8Playlist(playlistText, sourceUrl) {
+  return String(playlistText)
+    .split(/\r?\n/)
+    .map((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return line;
+      try {
+        const absolute = new URL(t, sourceUrl).toString();
+        return `/api/cameras/stream?url=${encodeURIComponent(absolute)}`;
+      } catch {
+        return line;
+      }
+    })
+    .join('\n');
+}
+
+function ensureRtmpSession(sourceUrl) {
+  ensureCameraStreamDir();
+  startCameraStreamCleanupLoop();
+
+  const id = cameraSessionIdForUrl(sourceUrl);
+  const existing = cameraStreamSessions.get(id);
+  if (existing && existing.proc && !existing.proc.killed) {
+    existing.lastAccess = Date.now();
+    return existing;
+  }
+
+  const dir = path.join(CAMERA_STREAM_DIR, id);
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  fs.mkdirSync(dir, { recursive: true });
+
+  const playlistPath = path.join(dir, 'index.m3u8');
+  const ffArgs = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-i', sourceUrl,
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-f', 'hls',
+    '-hls_time', '2',
+    '-hls_list_size', '8',
+    '-hls_flags', 'delete_segments+append_list+omit_endlist',
+    playlistPath,
+  ];
+
+  const proc = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+  proc.stderr?.on('data', () => {});
+  proc.on('exit', () => {
+    const s = cameraStreamSessions.get(id);
+    if (s && s.proc === proc) s.proc = null;
+  });
+
+  const session = {
+    id,
+    url: sourceUrl,
+    dir,
+    playlistPath,
+    proc,
+    lastAccess: Date.now(),
+  };
+  cameraStreamSessions.set(id, session);
+  return session;
+}
+
+async function waitForPlaylist(playlistPath, timeoutMs = CAMERA_STREAM_BOOT_TIMEOUT_MS) {
+  const t0 = Date.now();
+  while ((Date.now() - t0) < timeoutMs) {
+    if (fs.existsSync(playlistPath)) {
+      try {
+        const st = fs.statSync(playlistPath);
+        if (st.size > 0) return true;
+      } catch {}
+    }
+    await sleep(250);
+  }
+  return false;
+}
+
+async function handleCameraStreamProxy(queryParams, res) {
+  const sourceUrl = queryParams.get('url') || '';
+  if (!sourceUrl) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing url query param' }));
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid source url' }));
+    return;
+  }
+
+  const protocol = parsed.protocol.replace(':', '').toLowerCase();
+
+  if (protocol === 'http' || protocol === 'https') {
+    const upstream = await fetch(sourceUrl, {
+      headers: HEADERS,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    if (!upstream.ok) {
+      res.writeHead(upstream.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `upstream ${upstream.status}` }));
+      return;
+    }
+
+    const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
+    const isM3u8 = contentType.includes('mpegurl') || /\.m3u8(\?|$)/i.test(sourceUrl);
+    if (isM3u8) {
+      const text = await upstream.text();
+      const rewritten = rewriteM3u8Playlist(text, sourceUrl);
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.apple.mpegurl',
+        'Cache-Control': 'no-store, max-age=0',
+      });
+      res.end(rewritten);
+      return;
+    }
+
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.writeHead(200, {
+      'Content-Type': contentType || guessMimeByName(parsed.pathname),
+      'Cache-Control': 'no-store, max-age=0',
+    });
+    res.end(body);
+    return;
+  }
+
+  if (protocol === 'rtmp' || protocol === 'rtsp' || protocol === 'mms') {
+    const hasFfmpeg = await ensureFfmpegAvailable();
+    if (!hasFfmpeg) {
+      res.writeHead(501, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ffmpeg not available on server for RTMP/RTSP conversion' }));
+      return;
+    }
+
+    const session = ensureRtmpSession(sourceUrl);
+    session.lastAccess = Date.now();
+    const ready = await waitForPlaylist(session.playlistPath);
+    if (!ready) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'transcoder warming up' }));
+      return;
+    }
+
+    const raw = fs.readFileSync(session.playlistPath, 'utf8');
+    const rewritten = raw
+      .split(/\r?\n/)
+      .map((line) => {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) return line;
+        return `/api/cameras/hls/${session.id}/${encodeURIComponent(t)}`;
+      })
+      .join('\n');
+
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.apple.mpegurl',
+      'Cache-Control': 'no-store, max-age=0',
+    });
+    res.end(rewritten);
+    return;
+  }
+
+  res.writeHead(400, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: `unsupported protocol: ${protocol}` }));
+}
+
+async function handleCameraHlsSegment(urlPath, res) {
+  const m = urlPath.match(/^\/api\/cameras\/hls\/([^/]+)\/(.+)$/);
+  if (!m) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+
+  const [, sessionId, encodedFile] = m;
+  const session = cameraStreamSessions.get(sessionId);
+  if (!session) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'stream session expired' }));
+    return;
+  }
+  session.lastAccess = Date.now();
+
+  const fileName = decodeURIComponent(encodedFile || '');
+  if (!fileName || fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid segment path' }));
+    return;
+  }
+
+  const filePath = path.join(session.dir, fileName);
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'segment not found' }));
+    return;
+  }
+
+  const body = fs.readFileSync(filePath);
+  res.writeHead(200, {
+    'Content-Type': guessMimeByName(fileName),
+    'Cache-Control': 'no-store, max-age=0',
+  });
+  res.end(body);
+}
+
+async function handleCameraStreamHealth(res) {
+  const hasFfmpeg = await ensureFfmpegAvailable();
+  const now = Date.now();
+  const activeSessions = [...cameraStreamSessions.values()].map((s) => ({
+    id: s.id,
+    protocol: (() => {
+      try { return new URL(s.url).protocol.replace(':', ''); } catch { return 'unknown'; }
+    })(),
+    alive: !!(s.proc && !s.proc.killed),
+    idleMs: Math.max(0, now - (s.lastAccess || now)),
+  }));
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    ffmpegAvailable: hasFfmpeg,
+    activeSessionCount: activeSessions.length,
+    activeSessions,
+    ts: now,
+  }));
 }
 
 function tileCachePaths(cacheKey) {
@@ -2088,6 +2376,27 @@ const server = http.createServer(async (req, res) => {
 
   if (url === '/api/flights') {
     await handleFlights(query, res);
+  } else if (url === '/api/cameras/stream/health') {
+    try {
+      await handleCameraStreamHealth(res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera stream health failed' }));
+    }
+  } else if (url === '/api/cameras/stream') {
+    try {
+      await handleCameraStreamProxy(queryParams, res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera stream proxy failed' }));
+    }
+  } else if (url.startsWith('/api/cameras/hls/')) {
+    try {
+      await handleCameraHlsSegment(url, res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera hls segment failed' }));
+    }
   } else if (url === '/api/nofly_gps') {
     try {
       const parts = (query.bounds ?? '').split(',').map(Number);
