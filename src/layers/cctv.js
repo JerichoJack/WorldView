@@ -36,6 +36,8 @@ const FEED_ICONS = {
   v: _icon('#00aaff', '#0088cc'),
   h: _icon('#cc88ff', '#aa66ee'),
 };
+// Flock ALPR badge icon — sourced from flock.md [image9] (Automatic Licence Plate Recognition)
+const ALPR_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAB7UlEQVR4XqWVXUsbURCGz38s1CIUFKFFCcaPQmlINIr4QY3a1qtCe1MNbS2lGPAnCN6oYES9VBpiiIkfSTbZTZPpPifddLObyNoOvDDMmXnOOZM9E1U8KUvxtCzlXFUqtxVpNpsS1MilhloYsBSOcWvI8eGBLEZfSHjgsYSePgokcqmhFgYsVbo05Cyd9iU/VKfpI4GljLuKJGZe6eCoveOHd8uy8/1LT7FOnhcIA5ayOyFjg0/08YtXeakahrdVule1alXLsiwpFvK+1sCApSgg8HF9pScsc3Eua3MxLXzTNHW+95RYG8h1uhmnejM/3S7CJ0b+PwINebsQbxfhE3OA14Ure5Op+4GtXpl/ZEk281PWl2a18GmDA8Tcvg9o2f3Z/rohkdCQVmprU+r1ut3fipbz4QcCmrWa/Pj8ydcbYqy5LRCQ60XDz3xAYqy5LRjQvm4s/NwHJMaa2wIBuVbqW9IHJOa9smOcvCuQJ8XnwEeb2kpKfHJEC5+YF7K/t6tBaGp8+C+QX21iqF+/z0I+13hitU65jU3J875nGLAU8ywxG9FBkt6vLrZ37ibWvTAEA5YqZe3xdfz/4wsGLMWUNW5aM/H19EsJD/b5knuJXGqohdGa2PwF2IJeur6Txq9GR8/uM3Kpodbh/AYZzNApS0FcsgAAAABJRU5ErkJggg==';
 const OSM_ICON_CACHE = new Map();
 
 function _icon(fill, lens) {
@@ -208,6 +210,8 @@ function getOsmGlyph(kind) {
 
 function getOsmIcon(cam) {
   const kind = normalizeOsmKind(cam);
+  // ALPR cameras use the Flock badge icon directly (no SVG pin wrapper)
+  if (kind === 'alpr') return ALPR_ICON;
   const palette = getOsmPalette(cam);
   const key = `${kind}:${palette.fill}`;
   if (OSM_ICON_CACHE.has(key)) return OSM_ICON_CACHE.get(key);
@@ -225,7 +229,9 @@ function billboardImageForCamera(cam) {
   return isOsmOnlyCamera(cam) ? getOsmIcon(cam) : (FEED_ICONS[cam.t] ?? FEED_ICONS.i);
 }
 
-function markerVerticalOrigin(_cam) {
+function markerVerticalOrigin(cam) {
+  // ALPR uses a flat badge icon — center it on the point rather than anchoring the pin tip
+  if (isOsmOnlyCamera(cam) && normalizeOsmKind(cam) === 'alpr') return Cesium.VerticalOrigin.CENTER;
   return Cesium.VerticalOrigin.BOTTOM;
 }
 
@@ -278,6 +284,8 @@ function shouldRenderOsmFov(cam) {
   if (_viewer.camera.positionCartographic.height > OSM_FOV_MAX_ALT_M) return false;
   const kind = normalizeOsmKind(cam);
   if (kind === 'guard') return false;
+  // ALPR always shows a FOV cone (narrow forward arc) — direction defaults to 0° if unset
+  if (kind === 'alpr') return true;
   if (kind !== 'dome' && !Number.isFinite(Number(cam.d))) return false;
   return true;
 }
