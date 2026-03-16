@@ -1,18 +1,20 @@
 /**
  * server/collectors/collectCameras.mjs
  *
- * Downloads all public camera-data JSON files from their source feeds,
- * normalises them to a compact schema, and writes:
+ * Downloads camera data and writes:
  *
- *   public/camera-data/cameras.json        — full normalised array (~135 k entries)
- *   public/camera-data/cameras-lite.json  — compact array (id,a,o,u,t,s) for tile rendering
+ *   public/camera-data/cameras.json        — full normalised array
+ *   public/camera-data/cameras-lite.json  — compact array (id,a,o,u,x,t,s,y,z,d,k,m)
  *   public/camera-data/cameras-globe.json — minimal [lat,lng,typeIdx] tuples for globe coverage
  *   public/camera-data/meta.json          — source stats + timestamp
  *
+ * Default mode pulls OpenStreetMap surveillance objects directly from Overpass,
+ * with manufacturer filtering (default: "Flock Safety").
+ *
  * Usage:
  *   node server/collectors/collectCameras.mjs
- *   node server/collectors/collectCameras.mjs --sources wsdot,511ny   (subset)
- *   node server/collectors/collectCameras.mjs --concurrency 20
+ *   node server/collectors/collectCameras.mjs --mode=trafficvision --sources=wsdot,511ny
+ *   node server/collectors/collectCameras.mjs --osm-manufacturer="Flock Safety"
  */
 
 import fs   from 'fs';
@@ -245,8 +247,11 @@ const args = Object.fromEntries(
     .map(a => { const [k, v] = a.slice(2).split('='); return [k, v ?? true]; })
 );
 const CONCURRENCY   = parseInt(args.concurrency ?? '12');
-const SUBSET        = args.sources ? args.sources.split(',') : null;
+const SUBSET        = args.sources ? String(args.sources).split(',') : null;
 const SKIP_EXISTING = args['skip-existing'] === true;
+const MODE          = String(args.mode ?? 'osm').toLowerCase();
+const OSM_MANUFACTURER = args['osm-manufacturer'] === true ? 'Flock Safety' : (args['osm-manufacturer'] ? String(args['osm-manufacturer']) : 'Flock Safety');
+const OSM_INCLUDE_ALL_SURVEILLANCE = String(args['osm-all'] ?? 'false').toLowerCase() === 'true';
 
 const sources = SUBSET
   ? SOURCES.filter(s => SUBSET.includes(s.source))
@@ -326,290 +331,111 @@ async function fetchSource(s, idx, total) {
   }
 }
 
-/** Fetch and enrich cameras with sunders.uber.space OSM surveillance data */
-async function enrichWithSunders(cameras) {
-  const SUNDERS_API = 'https://sunders.uber.space/camera.php';
-  const MATCH_RADIUS = 0.01;  // ~1km at equator, in degrees
-  const GRID_SIZE = 10;       // 10°×10° spatial grid cells to avoid O(n*m) explosion
-  const SUNDERS_ZOOM = 14;
-  const SUNDERS_WIDTH = 1400;
-  const SUNDERS_HEIGHT = 900;
-  let enrichedCount = 0;
+/** Fetch OSM surveillance objects directly from Overpass (no sunders dependency). */
+async function fetchOsmSurveillanceCameras() {
+  const OVERPASS_ENDPOINTS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ];
 
-  try {
-    console.log(`\n  Enriching with sunders.uber.space OSM data...`);
-    
-    // Group cameras into spatial grid cells to limit matching scope
-    const grid = new Map();
-    for (const cam of cameras) {
-      const cellLat = Math.floor(cam.lat / GRID_SIZE) * GRID_SIZE;
-      const cellLng = Math.floor(cam.lng / GRID_SIZE) * GRID_SIZE;
-      const key = `${cellLat},${cellLng}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key).push(cam);
-    }
-    
-    console.log(`    Grouped ${cameras.length} cameras into ${grid.size} grid cells`);
-    
-    // Process each grid cell independently
-    let cellCount = 0;
-    for (const [cellKey, cellCameras] of grid) {
-      cellCount++;
-      const [cellLat, cellLng] = cellKey.split(',').map(Number);
-      const bounds = {
-        minLat: cellLat,
-        maxLat: cellLat + GRID_SIZE,
-        minLng: cellLng,
-        maxLng: cellLng + GRID_SIZE,
-      };
-      
+  const manufacturerNeedle = OSM_MANUFACTURER.trim().toLowerCase();
+  const regions = [
+    { name: 'USA Northeast', minLat: 40, maxLat: 45, minLng: -74, maxLng: -71 },
+    { name: 'USA California', minLat: 37, maxLat: 38, minLng: -122, maxLng: -120 },
+    { name: 'USA Texas', minLat: 29, maxLat: 34, minLng: -103, maxLng: -94 },
+    { name: 'UK London', minLat: 51.3, maxLat: 51.7, minLng: -0.5, maxLng: 0.2 },
+    { name: 'Germany Berlin', minLat: 52.3, maxLat: 52.7, minLng: 13.1, maxLng: 13.8 },
+  ];
+
+  const cameras = [];
+  const byId = new Set();
+  let totalFetched = 0;
+
+  console.log(`\n  Fetching OSM surveillance objects from Overpass...`);
+  console.log(`    Manufacturer filter: ${OSM_INCLUDE_ALL_SURVEILLANCE ? 'disabled (--osm-all=true)' : OSM_MANUFACTURER}`);
+
+  for (const region of regions) {
+    const q = `[out:json][timeout:60];(node["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});way["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});relation["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng}););out center tags;`;
+
+    let data = null;
+    let lastError = null;
+
+    for (const endpoint of OVERPASS_ENDPOINTS) {
       try {
-        // Fetch sunders data for this grid cell only
-        const params = new URLSearchParams({
-          bbox: `${bounds.minLng},${bounds.minLat},${bounds.maxLng},${bounds.maxLat}`,
-          zoom: String(SUNDERS_ZOOM),
-          width: String(SUNDERS_WIDTH),
-          height: String(SUNDERS_HEIGHT),
+        const body = new URLSearchParams({ data: q });
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          body,
+          headers: {
+            'User-Agent': 'ShadowGrid-Collector/1.0',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json,text/plain,*/*',
+          },
+          signal: AbortSignal.timeout(60_000),
         });
-        const sunUrl = `${SUNDERS_API}?${params}`;
-        
-        const res = await fetch(sunUrl, { 
-          signal: AbortSignal.timeout(30_000),
-          headers: { 'User-Agent': 'ShadowGrid-Collector/1.0' },
-        });
-        if (!res.ok) continue;  // Skip cells with no data
-        
-        const sunders = await res.json();
-        
-        // Handle different API response formats
-        let nodes = sunders;
-        if (!Array.isArray(nodes)) {
-          // Try to extract array from common response structures
-          nodes = sunders.features || sunders.nodes || sunders.data || sunders.cameras || [];
-          if (!Array.isArray(nodes)) nodes = [];
-        }
-        if (nodes.length === 0) continue;
-
-        // Expand clustered entries so we can proximity-match against individual points.
-        const expanded = [];
-        for (const n of nodes) {
-          const base = {
-            lat: n.lat,
-            lon: n.lon,
-            id: n.id,
-            tags: {
-              'camera:type': n['camera:type'] ?? n.camera_type ?? null,
-              operator: n.operator ?? null,
-              'camera:direction': n['camera:direction'] ?? n.camera_direction ?? n.direction ?? null,
-              height: n.height ?? null,
-              manufacturer: n.manufacturer ?? null,
-              man_made: n.man_made ?? null,
-            },
-          };
-          if (base.lat != null && base.lon != null) expanded.push(base);
-          if (Array.isArray(n.poly)) {
-            for (const p of n.poly) {
-              expanded.push({
-                lat: p.lat,
-                lon: p.lon,
-                id: p.id,
-                tags: base.tags,
-              });
-            }
-          }
-        }
-
-        if (expanded.length === 0) continue;
-        
-        // Match cameras in this cell to sunders nodes in this cell
-        for (const cam of cellCameras) {
-          for (const sun of expanded) {
-            const sunLat = parseFloat(sun.lat);
-            const sunLng = parseFloat(sun.lon);
-            if (!isFinite(sunLat) || !isFinite(sunLng)) continue;
-            
-            const latDist = Math.abs(cam.lat - sunLat);
-            const lngDist = Math.abs(cam.lng - sunLng);
-            
-            if (latDist + lngDist < MATCH_RADIUS) {
-              // Matched — populate sunders fields
-              if (sun.tags?.['camera:type']) cam.sundersType = sun.tags['camera:type'];
-              if (sun.tags?.operator) cam.sundersOperator = sun.tags.operator;
-              if (sun.tags?.['camera:direction']) cam.sundersDirection = parseFloat(sun.tags['camera:direction']);
-              if (sun.tags?.height) cam.sundersHeight = parseFloat(sun.tags.height);
-              enrichedCount++;
-              break;  // Use first match, move to next camera
-            }
-          }
-        }
-      } catch {
-        // Grid cell fetch failed — continue to next cell
-      }
-      
-      // Log progress every 10 cells
-      if (cellCount % 10 === 0) {
-        process.stdout.write(`\r    Processing grid cell ${cellCount}/${grid.size} (${enrichedCount} matches so far)`);
-      }
-    }
-    
-    console.log(`\r    Enriched ${enrichedCount} cameras with OSM metadata (${grid.size} cells scanned)`);
-  } catch (err) {
-    console.warn(`    Sunders enrichment failed (optional): ${err.message}`);
-    // Non-fatal — continue without sunders data
-  }
-}
-
-/** Fetch sunders-only cameras (not in trafficvision feeds) and add as new sources */
-async function fetchSundersOnlyCameras() {
-  const SUNDERS_API = 'https://sunders.uber.space/camera.php';
-  const SUNDERS_ZOOM = 14;
-  const SUNDERS_WIDTH = 1400;
-  const SUNDERS_HEIGHT = 900;
-  let sundersOnlyCount = 0;
-
-  try {
-    console.log(`\n  Fetching sunders-only cameras (Flock Safety + OSM surveillance)...`);
-    
-    // Query a few major regions with known surveillance data
-    // Note: sunders.uber.space returns ALL nodes in bbox, filtering happens client-side
-    const regions = [
-      { name: 'USA Northeast', minLat: 40, maxLat: 45, minLng: -74, maxLng: -71 },      // NYC area
-      { name: 'USA California', minLat: 37, maxLat: 38, minLng: -122, maxLng: -120 },   // Bay Area
-      { name: 'USA Texas', minLat: 29, maxLat: 33, minLng: -98, maxLng: -94 },          // Houston/DFW
-      { name: 'UK London', minLat: 51.3, maxLat: 51.7, minLng: -0.5, maxLng: 0.2 },     // London
-      { name: 'Germany Berlin', minLat: 52.3, maxLat: 52.7, minLng: 13.1, maxLng: 13.8 }, // Berlin
-    ];
-    
-    const newCameras = [];
-    let totalFetched = 0;
-    let regionCount = 0;
-    
-    for (const region of regions) {
-      regionCount++;
-      const params = new URLSearchParams({
-        bbox: `${region.minLng},${region.minLat},${region.maxLng},${region.maxLat}`,
-        zoom: String(SUNDERS_ZOOM),
-        width: String(SUNDERS_WIDTH),
-        height: String(SUNDERS_HEIGHT),
-      });
-      const sunUrl = `${SUNDERS_API}?${params}`;
-      
-      try {
-        const res = await fetch(sunUrl, {
-          signal: AbortSignal.timeout(30_000),
-          headers: { 'User-Agent': 'ShadowGrid-Collector/1.0' },
-        });
-        if (!res.ok) {
-          console.log(`      ${region.name}: HTTP ${res.status}`);
-          continue;
-        }
-        
-        const sunders = await res.json();
-        
-        // Handle different API response formats
-        let nodes = sunders;
-        if (!Array.isArray(nodes)) {
-          // Try to extract array from common response structures
-          nodes = sunders.features || sunders.nodes || sunders.data || sunders.cameras || [];
-          if (!Array.isArray(nodes)) {
-            console.log(`      ${region.name}: Expected array but got ${typeof sunders}${Array.isArray(sunders) ? ` (array)` : `${Object.keys(sunders).slice(0,3).join(',')}`}`);
-            continue;
-          }
-        }
-        if (nodes.length === 0) {
-          console.log(`      ${region.name}: No nodes in response`);
-          continue;
-        }
-        
-        // Expand clustered entries so poly children can be included as real points.
-        const expanded = [];
-        for (const n of nodes) {
-          const base = {
-            id: n.id,
-            lat: n.lat,
-            lon: n.lon,
-            tags: {
-              man_made: n.man_made ?? null,
-              manufacturer: n.manufacturer ?? null,
-              'camera:type': n['camera:type'] ?? n.camera_type ?? null,
-              operator: n.operator ?? null,
-              'camera:direction': n['camera:direction'] ?? n.camera_direction ?? n.direction ?? null,
-              height: n.height ?? null,
-              name: n.name ?? null,
-              'surveillance:type': n['surveillance:type'] ?? null,
-            },
-          };
-          if (base.lat != null && base.lon != null) expanded.push(base);
-          if (Array.isArray(n.poly)) {
-            for (const p of n.poly) {
-              expanded.push({
-                id: p.id,
-                lat: p.lat,
-                lon: p.lon,
-                tags: base.tags,
-              });
-            }
-          }
-        }
-
-        totalFetched += expanded.length;
-        console.log(`      ${region.name}: ${expanded.length} points fetched`);
-        
-        // Filter for surveillance cameras - be lenient with filtering
-        for (const sun of expanded) {
-          const tags = sun.tags || {};
-          
-          // Include if: 
-          // - has man_made=surveillance tag, OR
-          // - manufacturer contains "Flock", OR  
-          // - camera:type exists (any camera tag suggests surveillance)
-          const isSurveillance = tags.man_made === 'surveillance';
-          const isFlockSafety = tags.manufacturer?.toLowerCase?.().includes('flock');
-          const hasCamera = tags.camera_type || tags['camera:type'];
-          
-          if (isSurveillance || isFlockSafety || hasCamera) {
-            // Convert to our schema
-            const cam = {
-              id: `sunders-${sun.id}`,
-              source: 'sunders',
-              feedType: 'image',  // OSM nodes don't have video URLs
-              lat: parseFloat(sun.lat),
-              lng: parseFloat(sun.lon),
-              imageUrl: null,
-              videoUrl: null,
-              location: tags.name || tags.operator || 'Surveillance Camera',
-              country: '',
-              state: '',
-              city: '',
-              // Store OSM tags directly
-              sundersType: tags['camera:type'] || null,
-              sundersOperator: tags.operator || null,
-              sundersDirection: tags['camera:direction'] ? parseFloat(tags['camera:direction']) : null,
-              sundersHeight: tags.height ? parseFloat(tags.height) : null,
-              sundersManufacturer: tags.manufacturer || null,
-            };
-            
-            // Only add if coordinates are valid
-            if (Number.isFinite(cam.lat) && Number.isFinite(cam.lng)) {
-              newCameras.push(cam);
-              sundersOnlyCount++;
-            }
-          }
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
+        break;
       } catch (err) {
-        console.log(`      ${region.name}: ${err.message}`);
+        lastError = err;
       }
-      
-      // Rate limit to avoid overwhelming the API
-      await new Promise(r => setTimeout(r, 500));
     }
-    
-    console.log(`    Total fetched: ${totalFetched}, Qualified: ${sundersOnlyCount} surveillance cameras`);
-    return newCameras;
-  } catch (err) {
-    console.warn(`    Sunders-only fetch failed (optional): ${err.message}`);
-    return [];
+
+    if (!data || !Array.isArray(data.elements)) {
+      console.log(`      ${region.name}: ${lastError?.message || 'No Overpass response'}`);
+      continue;
+    }
+
+    const elements = data.elements;
+    totalFetched += elements.length;
+    let accepted = 0;
+
+    for (const el of elements) {
+      const lat = Number(el.lat ?? el.center?.lat);
+      const lng = Number(el.lon ?? el.center?.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+      const tags = el.tags || {};
+      const manufacturer = String(tags.manufacturer || '').trim();
+      const hasMfgMatch = manufacturerNeedle.length === 0 || manufacturer.toLowerCase().includes(manufacturerNeedle);
+      if (!OSM_INCLUDE_ALL_SURVEILLANCE && !hasMfgMatch) continue;
+
+      const osmType = el.type || 'node';
+      const osmId = `${osmType}-${el.id}`;
+      if (byId.has(osmId)) continue;
+      byId.add(osmId);
+
+      const direction = parseFloat(tags['camera:direction'] ?? tags.direction ?? '');
+      const height = parseFloat(tags.height ?? '');
+
+      cameras.push({
+        id: `osm-${osmId}`,
+        source: 'osm',
+        feedType: 'image',
+        lat,
+        lng,
+        imageUrl: null,
+        videoUrl: null,
+        location: tags.name || tags.operator || manufacturer || 'OSM Surveillance Camera',
+        country: '',
+        state: '',
+        city: '',
+        sundersType: tags['camera:type'] || tags['surveillance:type'] || null,
+        sundersOperator: tags.operator || null,
+        sundersDirection: Number.isFinite(direction) ? direction : null,
+        sundersHeight: Number.isFinite(height) ? height : null,
+        sundersManufacturer: manufacturer || null,
+      });
+      accepted++;
+    }
+
+    console.log(`      ${region.name}: ${elements.length} fetched, ${accepted} accepted`);
+    await new Promise(r => setTimeout(r, 400));
   }
+
+  console.log(`    Total fetched: ${totalFetched}, Qualified: ${cameras.length} surveillance cameras`);
+  return cameras;
 }
 
 /** Run an array of async tasks with max concurrency */
@@ -629,24 +455,24 @@ async function pool(tasks, concurrency) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n ShadowGrid Camera Collector`);
+  console.log(`  Mode        : ${MODE}`);
   console.log(`  Sources     : ${sources.length}`);
   console.log(`  Concurrency : ${CONCURRENCY}`);
   console.log(`  Output      : ${OUT_DIR}\n`);
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const tasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
-  const results = await pool(tasks, CONCURRENCY);
+  let results = [];
+  let allCameras = [];
 
-  // ── Flatten all cameras ────────────────────────────────────────────────────
-  const allCameras = results.flatMap(r => r.cameras);
-  console.log(`\n  Total cameras: ${allCameras.length}`);
-
-  // ── Fetch sunders-only cameras (Flock Safety + OSM surveillance) ──────────
-  const sundersCameras = await fetchSundersOnlyCameras();
-  if (sundersCameras.length > 0) {
-    allCameras.push(...sundersCameras);
-    console.log(`  Added ${sundersCameras.length} sunders-only surveillance cameras`);
+  if (MODE === 'trafficvision') {
+    const tasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
+    results = await pool(tasks, CONCURRENCY);
+    allCameras = results.flatMap(r => r.cameras);
+    console.log(`\n  Total cameras: ${allCameras.length}`);
+  } else {
+    allCameras = await fetchOsmSurveillanceCameras();
+    console.log(`\n  Total OSM surveillance cameras: ${allCameras.length}`);
   }
 
   // ── Deduplicate by id ─────────────────────────────────────────────────────
@@ -658,9 +484,6 @@ async function main() {
   });
   console.log(`  Unique cameras: ${unique.length}`);
 
-  // ── Enrich with sunders OSM surveillance data ───────────────────────────────
-  await enrichWithSunders(unique);
-
   // ── Full output ────────────────────────────────────────────────────────────
   const fullPath = path.join(OUT_DIR, 'cameras.json');
   fs.writeFileSync(fullPath, JSON.stringify(unique));
@@ -669,8 +492,7 @@ async function main() {
   // ── Compact/lite output — only fields needed for tile rendering ────────────
   // Schema: id(i), lat(a), lon(o), imageUrl(u), videoUrl(x), feedType(t), source(s)
   // For hybrid (h): both u and x are populated. For image (i): only u. For video (v): only x.
-  // Sunders enrichment: type(y), operator(z), direction(d), height(k), manufacturer(m) — all optional.
-  // Includes trafficvision cameras enriched with OSM metadata + sunders-only surveillance cameras.
+  // OSM metadata fields: type(y), operator(z), direction(d), height(k), manufacturer(m).
   const lite = unique.map(c => {
     const feedTypeChar = c.feedType[0];  // 'i'=image, 'v'=video, 'h'=hybrid
     const obj = {
@@ -694,7 +516,7 @@ async function main() {
       obj.u = c.imageUrl || null;
     }
 
-    // Sunders enrichment (will be null if not enriched yet)
+    // OSM metadata enrichment fields
     if (c.sundersType) obj.y = c.sundersType;           // camera:type from OSM
     if (c.sundersOperator) obj.z = c.sundersOperator;   // operator name
     if (c.sundersDirection) obj.d = c.sundersDirection; // direction in degrees
@@ -717,8 +539,8 @@ async function main() {
     ts: new Date().toISOString(),
     n:  lite.length,
     d:  lite.map(c => [+c.a.toFixed(4), +c.o.toFixed(4), T_IDX[c.t] ?? 0]),
-    // Count enriched cameras (with sunders OSM data) + sunders-only cameras
-    sunders: lite.filter(c => c.y || c.z || c.d || c.k || c.m).length,
+    // Count cameras with attached OSM metadata tags.
+    osmTagged: lite.filter(c => c.y || c.z || c.d || c.k || c.m).length,
   };
   const globePath = path.join(OUT_DIR, 'cameras-globe.json');
   fs.writeFileSync(globePath, JSON.stringify(globe));
@@ -757,19 +579,24 @@ async function main() {
   // ── Source meta ────────────────────────────────────────────────────────────
   const meta = {
     generated:    new Date().toISOString(),
+    mode: MODE,
     totalCameras: unique.length,
-    sources: results.map(({ source, name, count, error }) => ({
-      source, name, count, ...(error ? { error } : {}),
-    })),
+    sources: MODE === 'trafficvision'
+      ? results.map(({ source, name, count, error }) => ({
+          source, name, count, ...(error ? { error } : {}),
+        }))
+      : [{ source: 'osm', name: 'OpenStreetMap Overpass', count: unique.length }],
   };
   const metaPath = path.join(OUT_DIR, 'meta.json');
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   console.log(`  → ${metaPath}`);
 
-  const failed = results.filter(r => r.error);
-  if (failed.length) {
-    console.log(`\n  ⚠  ${failed.length} sources failed:`);
-    failed.forEach(r => console.log(`    - ${r.name}: ${r.error}`));
+  if (MODE === 'trafficvision') {
+    const failed = results.filter(r => r.error);
+    if (failed.length) {
+      console.log(`\n  ⚠  ${failed.length} sources failed:`);
+      failed.forEach(r => console.log(`    - ${r.name}: ${r.error}`));
+    }
   }
 
   console.log('\n  Done.\n');
