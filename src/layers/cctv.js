@@ -297,15 +297,32 @@ function captureCurrentView() {
 
 function flyToOsmCameraFov(cam) {
   if (!_viewer) return;
-  const directionDeg = Number.isFinite(Number(cam?.d)) ? Number(cam.d) : 0;
+  const target = Cesium.Cartesian3.fromDegrees(Number(cam.o), Number(cam.a), 0);
+  const direction = Cesium.Cartesian3.normalize(
+    Cesium.Cartesian3.clone(_viewer.camera.directionWC),
+    new Cesium.Cartesian3(),
+  );
   const rangeM = estimateFovRangeMeters(cam);
-  const viewHeight = Cesium.Math.clamp(rangeM * 1.6, 350, 1600);
+  const distanceM = Cesium.Math.clamp(rangeM * 2.4, 600, 3000);
+  const destination = Cesium.Cartesian3.add(
+    target,
+    Cesium.Cartesian3.multiplyByScalar(direction, -distanceM, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
+  );
+
+  // Keep the destination safely above terrain so the camera does not clip underground.
+  const destCarto = Cesium.Cartographic.fromCartesian(destination);
+  if (destCarto && Number.isFinite(destCarto.height) && destCarto.height < 120) {
+    destCarto.height = 120;
+    Cesium.Cartesian3.fromRadians(destCarto.longitude, destCarto.latitude, destCarto.height, undefined, destination);
+  }
+
   _viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(Number(cam.o), Number(cam.a), viewHeight),
+    destination,
     orientation: {
-      heading: Cesium.Math.toRadians(directionDeg),
-      pitch: Cesium.Math.toRadians(-62),
-      roll: 0,
+      heading: _viewer.camera.heading,
+      pitch: _viewer.camera.pitch,
+      roll: _viewer.camera.roll,
     },
     duration: 1.1,
   });
