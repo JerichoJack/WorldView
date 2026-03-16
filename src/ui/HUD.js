@@ -388,49 +388,6 @@ function drawReticle(viewer) {
         <button id="hud-cam-orbital" style="background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:rgba(0,255,136,0.78);font-family:'Share Tech Mono', monospace;font-size:9px;letter-spacing:0.06em;padding:4px 6px;cursor:pointer;">LABELS</button>
         <button id="hud-cam-rotate" style="grid-column:1 / span 2;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:rgba(0,255,136,0.78);font-family:'Share Tech Mono', monospace;font-size:9px;letter-spacing:0.06em;padding:4px 6px;cursor:pointer;">ROTATE</button>
       </div>
-      <div id="satellite-imagery-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);z-index:100;pointer-events:auto;">
-        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:90%;max-width:700px;background:rgba(4,10,18,0.96);border:2px solid rgba(0,255,136,0.35);border-right:3px solid rgba(0,255,136,0.7);padding:0;backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,0.6);">
-          <!-- Header -->
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid rgba(0,255,136,0.15);background:rgba(0,255,136,0.05);">
-            <div style="font-family:'Share Tech Mono',monospace;font-size:12px;letter-spacing:0.15em;color:rgba(0,255,136,0.9);text-transform:uppercase;">Satellite Imagery Viewer</div>
-            <button id="satellite-modal-close" style="background:none;border:none;color:rgba(0,255,136,0.7);font-size:14px;cursor:pointer;padding:4px 8px;">✕</button>
-          </div>
-          <!-- Content -->
-          <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
-            <!-- Location Search -->
-            <div>
-              <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Location</label>
-              <input id="satellite-location-input" type="text" placeholder="Search location or enter coordinates..." style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;box-sizing:border-box;"/>
-            </div>
-            <!-- Imagery Type Selector -->
-            <div>
-              <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Imagery Type</label>
-              <select id="satellite-imagery-type" style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;">
-                <option value="landsat8">Landsat 8 (RGB)</option>
-                <option value="sentinel2">Sentinel-2 (RGB)</option>
-                <option value="ndvi">NDVI (Vegetation)</option>
-                <option value="false-color">False Color (NIR)</option>
-              </select>
-            </div>
-            <!-- Date Selector -->
-            <div>
-              <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Date</label>
-              <input id="satellite-date-input" type="date" style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;box-sizing:border-box;"/>
-            </div>
-            <!-- Preview -->
-            <div style="position:relative;width:100%;padding-top:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(0,255,136,0.15);overflow:hidden;border-radius:2px;">
-              <div id="satellite-preview" style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:rgba(0,255,136,0.5);font-size:12px;font-family:'Share Tech Mono',monospace;">Click "Load" to fetch imagery</div>
-            </div>
-            <!-- Controls -->
-            <div style="display:flex;gap:8px;justify-content:flex-end;">
-              <button id="satellite-load-btn" style="padding:8px 16px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.35);color:rgba(0,255,136,0.8);font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;">Load Imagery</button>
-              <button id="satellite-apply-btn" style="padding:8px 16px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.35);color:rgba(0,255,136,0.8);font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;">Apply to Globe</button>
-            </div>
-            <!-- Status -->
-            <div id="satellite-status" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:rgba(0,255,136,0.5);text-align:center;min-height:12px;"></div>
-          </div>
-        </div>
-      </div>
     </div>
   `;
   document.body.appendChild(zoomPanel);
@@ -605,6 +562,63 @@ function drawReticle(viewer) {
     ">Imagery ▾</button>
   `;
   document.body.appendChild(imageryDock);
+
+  const satelliteModal = document.createElement('div');
+  satelliteModal.id = 'satellite-imagery-modal';
+  satelliteModal.hidden = true;
+  satelliteModal.style.cssText = `
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 100;
+    width: min(700px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    pointer-events: auto;
+  `;
+  satelliteModal.innerHTML = `
+    <div data-satellite-panel style="
+      background: rgba(4,10,18,0.96);
+      border: 2px solid rgba(0,255,136,0.35);
+      border-right: 3px solid rgba(0,255,136,0.7);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      overflow: auto;
+      max-height: calc(100vh - 24px);
+    ">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid rgba(0,255,136,0.15);background:rgba(0,255,136,0.05);">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:12px;letter-spacing:0.15em;color:rgba(0,255,136,0.9);text-transform:uppercase;">Satellite Imagery Viewer</div>
+        <button id="satellite-modal-close" style="background:none;border:none;color:rgba(0,255,136,0.7);font-size:14px;cursor:pointer;padding:4px 8px;">✕</button>
+      </div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
+        <div>
+          <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Location</label>
+          <input id="satellite-location-input" type="text" placeholder="Search location or enter coordinates..." style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;box-sizing:border-box;"/>
+        </div>
+        <div>
+          <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Imagery Type</label>
+          <select id="satellite-imagery-type" style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;">
+            <option value="landsat8">Landsat 8 (RGB)</option>
+            <option value="sentinel2">Sentinel-2 (RGB)</option>
+            <option value="ndvi">NDVI (Vegetation)</option>
+            <option value="false-color">False Color (NIR)</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Date</label>
+          <input id="satellite-date-input" type="date" style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;box-sizing:border-box;"/>
+        </div>
+        <div style="position:relative;width:100%;padding-top:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(0,255,136,0.15);overflow:hidden;border-radius:2px;">
+          <div id="satellite-preview" style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:rgba(0,255,136,0.5);font-size:12px;font-family:'Share Tech Mono',monospace;">Click \"Load\" to fetch imagery</div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="satellite-load-btn" style="padding:8px 16px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.35);color:rgba(0,255,136,0.8);font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;">Load Imagery</button>
+          <button id="satellite-apply-btn" style="padding:8px 16px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.35);color:rgba(0,255,136,0.8);font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;">Apply to Globe</button>
+        </div>
+        <div id="satellite-status" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:rgba(0,255,136,0.5);text-align:center;min-height:12px;"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(satelliteModal);
 
   function positionFiltersDock() {
     const statusRect = statusPanel.getBoundingClientRect();
@@ -851,6 +865,16 @@ function wireCameraControlButtons(viewer) {
     }
   }
 
+  function positionSatelliteModal() {
+    if (!imageryDropdownBtn || !satelliteModal) return;
+    const buttonRect = imageryDropdownBtn.getBoundingClientRect();
+    const modalWidth = Math.min(700, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(buttonRect.left, window.innerWidth - modalWidth - 12));
+    const top = Math.max(12, Math.min(buttonRect.bottom + 8, window.innerHeight - 24));
+    satelliteModal.style.left = `${left}px`;
+    satelliteModal.style.top = `${top}px`;
+  }
+
   /**
    * Parse location input (address or lat,lon coordinates)
    */
@@ -987,7 +1011,7 @@ function wireCameraControlButtons(viewer) {
       
       // Close modal after brief delay
       setTimeout(() => {
-        if (satelliteModal) satelliteModal.style.display = 'none';
+        if (satelliteModal) satelliteModal.hidden = true;
       }, 1500);
     } catch (err) {
       setSatelliteStatus('Apply failed: ' + err.message, true);
@@ -998,7 +1022,8 @@ function wireCameraControlButtons(viewer) {
   if (imageryDropdownBtn && satelliteModal) {
     imageryDropdownBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      satelliteModal.style.display = 'block';
+      satelliteModal.hidden = false;
+      positionSatelliteModal();
       // Set today's date as default
       const today = new Date().toISOString().split('T')[0];
       if (satelliteDateInput) satelliteDateInput.value = today;
@@ -1008,18 +1033,21 @@ function wireCameraControlButtons(viewer) {
 
   if (satelliteModalClose) {
     satelliteModalClose.addEventListener('click', () => {
-      if (satelliteModal) satelliteModal.style.display = 'none';
+      if (satelliteModal) satelliteModal.hidden = true;
     });
   }
 
-  // Close modal on background click
-  if (satelliteModal) {
-    satelliteModal.addEventListener('click', (e) => {
-      if (e.target === satelliteModal) {
-        satelliteModal.style.display = 'none';
-      }
-    });
-  }
+  document.addEventListener('click', (e) => {
+    if (!satelliteModal || satelliteModal.hidden) return;
+    if (satelliteModal.contains(e.target) || imageryDropdownBtn?.contains(e.target)) return;
+    satelliteModal.hidden = true;
+  });
+
+  window.addEventListener('resize', () => {
+    if (satelliteModal && !satelliteModal.hidden) {
+      positionSatelliteModal();
+    }
+  });
 
   if (satelliteLoadBtn) {
     satelliteLoadBtn.addEventListener('click', loadSatelliteImagery);
