@@ -68,6 +68,7 @@ let _globeReady   = false;      // cameras-globe.json loaded and points built
 let _selectedCameraId = null;   // currently highlighted camera for visual feedback
 let _streamHealthCache = { ts: 0, data: null }; // cached camera stream health probe
 let _selectionOverlayEntities = []; // selected OSM camera FOV overlays
+let _alprReturnView = null; // previous Cesium camera view before ALPR "Go to"
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,52 @@ function clearSelectionOverlay() {
     _ds?.entities.remove(entity);
   }
   _selectionOverlayEntities = [];
+}
+
+function captureCurrentView() {
+  if (!_viewer?.camera) return null;
+  const cam = _viewer.camera;
+  const carto = cam.positionCartographic;
+  if (!carto) return null;
+  return {
+    lon: Cesium.Math.toDegrees(carto.longitude),
+    lat: Cesium.Math.toDegrees(carto.latitude),
+    height: carto.height,
+    heading: cam.heading,
+    pitch: cam.pitch,
+    roll: cam.roll,
+  };
+}
+
+function flyToOsmCameraFov(cam) {
+  if (!_viewer) return;
+  const directionDeg = Number.isFinite(Number(cam?.d)) ? Number(cam.d) : 0;
+  const rangeM = estimateFovRangeMeters(cam);
+  const viewHeight = Cesium.Math.clamp(rangeM * 1.6, 350, 1600);
+  _viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(Number(cam.o), Number(cam.a), viewHeight),
+    orientation: {
+      heading: Cesium.Math.toRadians(directionDeg),
+      pitch: Cesium.Math.toRadians(-62),
+      roll: 0,
+    },
+    duration: 1.1,
+  });
+}
+
+function flyBackToPreviousView() {
+  if (!_viewer || !_alprReturnView) return;
+  const view = _alprReturnView;
+  _viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+    orientation: {
+      heading: view.heading,
+      pitch: view.pitch,
+      roll: view.roll,
+    },
+    duration: 1.1,
+  });
+  _alprReturnView = null;
 }
 
 function shouldRenderOsmFov(cam) {
@@ -545,6 +592,7 @@ function renderPanel(cam) {
     const isSundersOnly = !videoUrl && !imageUrl;
     const osmPalette = isSundersOnly ? getOsmPalette(cam) : null;
     const osmKind = isSundersOnly ? normalizeOsmKind(cam) : null;
+    const isAlprOsm = isSundersOnly && osmKind === 'alpr';
     const typeLabel = isSundersOnly
       ? `OSM ${String(cam.w || cam.y || osmKind || 'camera').toUpperCase()}`
       : cam.t === 'v' ? 'LIVE VIDEO' : cam.t === 'h' ? 'HYBRID' : 'SNAPSHOT';
@@ -564,6 +612,12 @@ function renderPanel(cam) {
         <div style="color:rgba(0,255,136,0.45);font-size:9px;margin-bottom:8px;letter-spacing:0.05em">
           ${cam.a.toFixed(5)}° · ${cam.o.toFixed(5)}°
         </div>
+        ${isAlprOsm ? `
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <button id="cctv-alpr-goto" style="flex:1;background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.35);color:rgba(200,255,220,0.95);cursor:pointer;font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase">Go to FOV</button>
+            <button id="cctv-alpr-back" style="flex:1;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.25);color:rgba(255,255,255,0.75);cursor:${_alprReturnView ? 'pointer' : 'not-allowed'};opacity:${_alprReturnView ? '1' : '0.5'};font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase" ${_alprReturnView ? '' : 'disabled'}>Back</button>
+          </div>
+        ` : ''}
         ${needsServerTranscode ? `
           <div id="cctv-transcode-note" style="margin-bottom:8px;padding:6px 8px;border:1px solid rgba(255,193,7,0.35);background:rgba(255,193,7,0.08);color:rgba(255,220,120,0.92);font-size:9px;line-height:1.4">
             Checking server transcoder status...
@@ -613,6 +667,18 @@ function renderPanel(cam) {
       clearSelectionOverlay();
       _panel.style.display = 'none';
     });
+
+    if (isAlprOsm) {
+      document.getElementById('cctv-alpr-goto')?.addEventListener('click', () => {
+        if (!_alprReturnView) _alprReturnView = captureCurrentView();
+        flyToOsmCameraFov(cam);
+        renderPanel(cam);
+      });
+      document.getElementById('cctv-alpr-back')?.addEventListener('click', () => {
+        flyBackToPreviousView();
+        renderPanel(cam);
+      });
+    }
 
     if (hasPlayableVideo) {
       const videoEl = document.getElementById('cctv-video');
