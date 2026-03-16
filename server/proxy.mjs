@@ -60,11 +60,14 @@ const GOOGLE_ROUTES_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || DOTENV_VARS.ge
 const BACKEND_FLIGHT_PROVIDER = (process.env.VITE_FLIGHT_PROVIDER || DOTENV_VARS.get('VITE_FLIGHT_PROVIDER') || 'opensky').toLowerCase();
 const BACKEND_SATELLITE_PROVIDER = (process.env.VITE_SATELLITE_PROVIDER || DOTENV_VARS.get('VITE_SATELLITE_PROVIDER') || 'celestrak').toLowerCase();
 const BACKEND_TRAFFIC_PROVIDER = (process.env.VITE_TRAFFIC_PROVIDER || DOTENV_VARS.get('VITE_TRAFFIC_PROVIDER') || 'auto').toLowerCase();
+const BACKEND_MARINE_PROVIDER = (process.env.VITE_MARINE_PROVIDER || DOTENV_VARS.get('VITE_MARINE_PROVIDER') || 'auto').toLowerCase();
 const OPENSKY_CLIENT_ID = process.env.VITE_OPENSKY_CLIENT_ID || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_ID') || '';
 const OPENSKY_CLIENT_SECRET = process.env.VITE_OPENSKY_CLIENT_SECRET || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_SECRET') || '';
 const SPACETRACK_USER = process.env.VITE_SPACETRACK_USERNAME || DOTENV_VARS.get('VITE_SPACETRACK_USERNAME') || '';
 const SPACETRACK_PASS = process.env.VITE_SPACETRACK_PASSWORD || DOTENV_VARS.get('VITE_SPACETRACK_PASSWORD') || '';
 const N2YO_KEY = process.env.VITE_N2YO_API_KEY || DOTENV_VARS.get('VITE_N2YO_API_KEY') || '';
+const AIS_PROXY_URL = process.env.VITE_MARINE_AIS_PROXY_URL || DOTENV_VARS.get('VITE_MARINE_AIS_PROXY_URL') || '';
+const AIS_PROXY_KEY = process.env.VITE_MARINE_AIS_PROXY_KEY || DOTENV_VARS.get('VITE_MARINE_AIS_PROXY_KEY') || '';
 const SENTINEL_HUB_INSTANCE_ID = process.env.SENTINEL_HUB_INSTANCE_ID || process.env.VITE_SENTINEL_HUB_INSTANCE_ID || DOTENV_VARS.get('SENTINEL_HUB_INSTANCE_ID') || DOTENV_VARS.get('VITE_SENTINEL_HUB_INSTANCE_ID') || '';
 const SENTINEL_HUB_TRUE_COLOR_LAYER = process.env.SENTINEL_HUB_TRUE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_TRUE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_TRUE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_TRUE_COLOR_LAYER') || 'TRUE_COLOR';
 const SENTINEL_HUB_FALSE_COLOR_LAYER = process.env.SENTINEL_HUB_FALSE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_FALSE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_FALSE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_FALSE_COLOR_LAYER') || SENTINEL_HUB_TRUE_COLOR_LAYER;
@@ -1658,25 +1661,6 @@ function overpassMarineQuery(bounds) {
   `;
 }
 
-function hashString(input = '') {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function mulberry32(seed) {
-  let t = seed >>> 0;
-  return function next() {
-    t += 0x6D2B79F5;
-    let n = Math.imul(t ^ (t >>> 15), t | 1);
-    n ^= n + Math.imul(n ^ (n >>> 7), n | 61);
-    return ((n ^ (n >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function normalizeLon180(lon) {
   return ((((lon + 180) % 360) + 360) % 360) - 180;
 }
@@ -1703,44 +1687,6 @@ function buildTrackPoints(lat, lon, headingDeg = 0, speedKnots = 10, steps = 6) 
   }
   points.push({ lat, lon: normalizeLon180(lon) });
   return points;
-}
-
-function generateSimulatedMarineVessels(bounds, cacheKey, count = 48) {
-  const [minLon, minLat, maxLon, maxLat] = bounds;
-  const lonSpan = Math.max(0.1, maxLon - minLon);
-  const latSpan = Math.max(0.1, maxLat - minLat);
-  const bucket = Math.floor(Date.now() / 60_000);
-  const phase = ((Date.now() % 60_000) / 60_000) * Math.PI * 2;
-  const rng = mulberry32(hashString(`${cacheKey}:${bucket}`));
-  const names = ['Atlas', 'Aurora', 'Mariner', 'Poseidon', 'Endeavor', 'Orion', 'Calypso', 'Navigator', 'Voyager', 'Argonaut'];
-  const types = ['cargo', 'tanker', 'passenger', 'fishing', 'other'];
-  const vessels = [];
-
-  for (let i = 0; i < count; i += 1) {
-    const type = types[Math.floor(rng() * types.length)];
-    const baseLat = minLat + rng() * latSpan;
-    const baseLon = minLon + rng() * lonSpan;
-    const heading = Math.floor(rng() * 360);
-    const speed = 6 + Math.floor(rng() * 18);
-    const driftScale = 0.03 + rng() * 0.06;
-    const lat = Math.max(-85, Math.min(85, baseLat + Math.sin(phase + i) * driftScale));
-    const lon = normalizeLon180(baseLon + Math.cos(phase + i * 0.7) * driftScale);
-
-    vessels.push({
-      id: `sim-vessel-${i}`,
-      lat,
-      lon,
-      name: `${names[i % names.length]} ${String(i + 1).padStart(2, '0')}`,
-      type,
-      speed,
-      heading,
-      simulated: true,
-      tags: { ship: type },
-      track: buildTrackPoints(lat, lon, heading, speed),
-    });
-  }
-
-  return vessels;
 }
 
 function parseOverpassVessels(payload) {
@@ -1771,6 +1717,85 @@ function parseOverpassVessels(payload) {
   return out;
 }
 
+function parseAisNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseAisVessels(payload) {
+  const candidates = Array.isArray(payload)
+    ? payload
+    : (Array.isArray(payload?.vessels) ? payload.vessels
+      : Array.isArray(payload?.positions) ? payload.positions
+        : Array.isArray(payload?.data) ? payload.data
+          : []);
+
+  const out = [];
+  for (const row of candidates) {
+    const lat = parseAisNumber(row?.lat ?? row?.latitude ?? row?.LAT ?? row?.Latitude);
+    const lon = parseAisNumber(row?.lon ?? row?.lng ?? row?.longitude ?? row?.LON ?? row?.Longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const heading = parseAisNumber(row?.heading ?? row?.cog ?? row?.course ?? row?.COG);
+    const speed = parseAisNumber(row?.speed ?? row?.sog ?? row?.SOG ?? row?.speed_knots);
+    const idRaw = row?.id ?? row?.mmsi ?? row?.MMSI ?? row?.imo ?? row?.IMO ?? row?.uuid;
+    const id = idRaw ? `ais-${String(idRaw)}` : `ais-${lat.toFixed(6)}-${lon.toFixed(6)}`;
+    const shipType = String(row?.type ?? row?.shipType ?? row?.ship_type ?? row?.vesselType ?? row?.vessel_type ?? '').toLowerCase();
+    const name = row?.name ?? row?.vesselName ?? row?.ship_name ?? row?.SHIPNAME ?? row?.callsign ?? `AIS ${String(idRaw ?? out.length + 1)}`;
+
+    out.push({
+      id,
+      lat,
+      lon: normalizeLon180(lon),
+      name: String(name),
+      type: shipType || 'other',
+      speed: Number.isFinite(speed) ? speed : null,
+      heading: Number.isFinite(heading) ? heading : null,
+      simulated: false,
+      tags: {
+        ship: shipType || 'other',
+        mmsi: row?.mmsi ?? row?.MMSI ?? null,
+        imo: row?.imo ?? row?.IMO ?? null,
+      },
+      track: buildTrackPoints(lat, normalizeLon180(lon), Number.isFinite(heading) ? heading : 0, Number.isFinite(speed) ? speed : 8),
+    });
+  }
+
+  return out;
+}
+
+function buildAisProxyUrl(bounds) {
+  if (!AIS_PROXY_URL) return '';
+  const [minLon, minLat, maxLon, maxLat] = bounds;
+  const url = new URL(AIS_PROXY_URL);
+  if (!url.searchParams.has('minLon')) url.searchParams.set('minLon', `${minLon}`);
+  if (!url.searchParams.has('minLat')) url.searchParams.set('minLat', `${minLat}`);
+  if (!url.searchParams.has('maxLon')) url.searchParams.set('maxLon', `${maxLon}`);
+  if (!url.searchParams.has('maxLat')) url.searchParams.set('maxLat', `${maxLat}`);
+  return url.toString();
+}
+
+async function fetchAisVessels(bounds) {
+  if (!AIS_PROXY_URL) return [];
+  const url = buildAisProxyUrl(bounds);
+  const headers = { ...HEADERS };
+  if (AIS_PROXY_KEY) {
+    headers['Authorization'] = `Bearer ${AIS_PROXY_KEY}`;
+    headers['X-Api-Key'] = AIS_PROXY_KEY;
+  }
+
+  const resp = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) {
+    throw new Error(`AIS ${resp.status}`);
+  }
+  const payload = await resp.json();
+  return parseAisVessels(payload);
+}
+
 async function getMarinePayload(bounds) {
   const b = normalizeBounds(bounds);
   if (!b) {
@@ -1785,18 +1810,36 @@ async function getMarinePayload(bounds) {
   }
 
   let vessels = [];
-  let source = 'osm-overpass-server';
-  try {
-    const query = overpassMarineQuery(b);
-    const response = await fetchOverpassJson(query, 20_000);
-    vessels = parseOverpassVessels(response);
-  } catch (error) {
-    console.warn(`[proxy] Marine Overpass fetch failed: ${error?.message ?? 'unknown'}`);
+  let source = 'marine-live-empty';
+  const errors = [];
+
+  const providerOrder = (() => {
+    if (BACKEND_MARINE_PROVIDER === 'ais') return ['ais'];
+    if (BACKEND_MARINE_PROVIDER === 'overpass') return ['overpass'];
+    // auto: prefer AIS when configured, otherwise Overpass.
+    return AIS_PROXY_URL ? ['ais', 'overpass'] : ['overpass'];
+  })();
+
+  for (const provider of providerOrder) {
+    try {
+      if (provider === 'ais') {
+        vessels = await fetchAisVessels(b);
+        source = 'ais-live-server';
+      } else {
+        const query = overpassMarineQuery(b);
+        const response = await fetchOverpassJson(query, 22_000);
+        vessels = parseOverpassVessels(response);
+        source = 'osm-overpass-server';
+      }
+
+      if (vessels.length > 0) break;
+    } catch (error) {
+      errors.push(`${provider}:${error?.message ?? 'unknown'}`);
+    }
   }
 
-  if (!vessels.length) {
-    vessels = generateSimulatedMarineVessels(b, cacheKey);
-    source = 'simulated-server';
+  if (!vessels.length && errors.length > 0) {
+    console.warn(`[proxy] Marine live fetch failed (${providerOrder.join(' -> ')}): ${errors.join(' | ')}`);
   }
 
   const generatedAt = Date.now();
