@@ -61,6 +61,7 @@ let _hlsInstance  = null;       // active hls.js instance — destroyed on panel
 let _serverCamMap = new Map();  // id -> Cesium.Entity in server-heavy mode
 let _globePoints  = null;       // Cesium.PointPrimitiveCollection — globe-altitude coverage
 let _globeReady   = false;      // cameras-globe.json loaded and points built
+let _selectedCameraId = null;   // currently highlighted camera for visual feedback
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 
@@ -118,10 +119,16 @@ function renderPanel(cam) {
     destroyHls();
     if (!_panel) _panel = buildPanel();
 
+    // Update selection highlight
+    _selectedCameraId = cam.i;
+
+    // For new dual-URL schema: cam.u = image, cam.x = video
+    // For video (v): only cam.x is set; for image (i): only cam.u is set
+    // For hybrid (h): both cam.u (image) and cam.x (video) are set
     const hasVideo  = cam.t === 'v' || cam.t === 'h';
     const hasImage  = cam.t === 'i' || cam.t === 'h';
-    const videoUrl  = hasVideo ? cam.u : null;  // for hybrid, videoUrl stored separately? use cam.v if present
-    const imageUrl  = !hasVideo ? freshUrl(cam.u) : null;
+    const videoUrl  = hasVideo ? (cam.x || cam.u) : null;     // prefer cam.x for video
+    const imageUrl  = hasImage ? freshUrl(cam.u || cam.x) : null;  // fallback to video if no image
     const kind      = videoKind(videoUrl);
     const typeLabel = cam.t === 'v' ? 'LIVE VIDEO' : cam.t === 'h' ? 'HYBRID' : 'SNAPSHOT';
     const typeCol   = cam.t === 'v' ? '#00aaff'   : cam.t === 'h' ? '#cc88ff' : '#00ff88';
@@ -172,11 +179,12 @@ function renderPanel(cam) {
 
     _panel.style.display = 'block';
 
-    // Common: close button destroys video/hls
+    // Common: close button destroys video/hls and clears highlight
     document.getElementById('cctv-close')?.addEventListener('click', () => {
       destroyHls();
       const v = document.getElementById('cctv-video');
       if (v) { v.pause(); v.src = ''; }
+      _selectedCameraId = null;  // clear highlight
       _panel.style.display = 'none';
     });
 
@@ -271,15 +279,27 @@ async function _spawnEntities(key) {
         image:                    ICONS[cam.t] ?? ICONS.i,
         verticalOrigin:           Cesium.VerticalOrigin.CENTER,
         horizontalOrigin:         Cesium.HorizontalOrigin.CENTER,
-        scale:                    1.25,
+        scale:                    new Cesium.CallbackProperty(() => _selectedCameraId === cam.i ? 1.6 : 1.25, false),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text:             new Cesium.CallbackProperty(() => _selectedCameraId === cam.i ? (cam.s ?? 'Camera') : '', false),
+        font:             '12px "Courier New", monospace',
+        color:            Cesium.Color.fromCssColorString('#00FF00'),
+        outlineColor:     Cesium.Color.fromCssColorString('#000000'),
+        outlineWidth:     1,
+        style:            Cesium.LabelStyle.FILL_AND_OUTLINE,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        verticalOrigin:   Cesium.VerticalOrigin.TOP,
+        pixelOffset:      new Cesium.Cartesian2(0, 15),
       },
       properties: {
         type:        'cctv',
         camId:       cam.i,
         camLat:      cam.a,
         camLng:      cam.o,
-        camUrl:      cam.u,
+        camUrl:      cam.u,      // image URL
+        camVideoUrl: cam.x,       // video URL (new field for dual-URL support)
         camFeedType: cam.t,
         camSource:   cam.s,
       },
@@ -384,8 +404,19 @@ function _applyServerSnapshotCameras(cameras) {
         image:                    ICONS[cam.t] ?? ICONS.i,
         verticalOrigin:           Cesium.VerticalOrigin.CENTER,
         horizontalOrigin:         Cesium.HorizontalOrigin.CENTER,
-        scale:                    1.25,
+        scale:                    new Cesium.CallbackProperty(() => _selectedCameraId === camId ? 1.6 : 1.25, false),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text:             new Cesium.CallbackProperty(() => _selectedCameraId === camId ? (cam.s ?? 'Camera') : '', false),
+        font:             '12px "Courier New", monospace',
+        color:            Cesium.Color.fromCssColorString('#00FF00'),
+        outlineColor:     Cesium.Color.fromCssColorString('#000000'),
+        outlineWidth:     1,
+        style:            Cesium.LabelStyle.FILL_AND_OUTLINE,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        verticalOrigin:   Cesium.VerticalOrigin.TOP,
+        pixelOffset:      new Cesium.Cartesian2(0, 15),
       },
       properties: {
         type:        'cctv',
@@ -393,6 +424,7 @@ function _applyServerSnapshotCameras(cameras) {
         camLat:      cam.a,
         camLng:      cam.o,
         camUrl:      cam.u,
+        camVideoUrl: cam.x,       // video URL (new field for dual-URL support)
         camFeedType: cam.t,
         camSource:   cam.s,
       },
@@ -517,6 +549,7 @@ export async function initCCTV(viewer) {
       a: props.camLat?.getValue(),
       o: props.camLng?.getValue(),
       u: props.camUrl?.getValue(),
+      x: props.camVideoUrl?.getValue(),  // video URL from dual-URL schema
       t: props.camFeedType?.getValue(),
       s: props.camSource?.getValue(),
     });

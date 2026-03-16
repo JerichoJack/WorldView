@@ -264,7 +264,7 @@ function normalise(raw, sourceName) {
   const lng = raw.lng ?? raw.longitude ?? null;
   if (lat == null || lng == null) return null;
 
-  // Prefer image for static snapshot, fall back to video
+  // Check URLs availability
   const imageUrl = raw.imageUrl ?? null;
   const videoUrl = raw.videoUrl ?? null;
   if (!imageUrl && !videoUrl) return null;
@@ -272,7 +272,7 @@ function normalise(raw, sourceName) {
   return {
     id:       raw.id,
     source:   raw.source || sourceName,
-    feedType: raw.feedType || (videoUrl ? 'video' : 'image'),
+    feedType: raw.feedType || (imageUrl && videoUrl ? 'hybrid' : videoUrl ? 'video' : 'image'),
     lat:      parseFloat(lat),
     lng:      parseFloat(lng),
     imageUrl,
@@ -281,6 +281,11 @@ function normalise(raw, sourceName) {
     country:  raw.country  || '',
     state:    raw.state    || '',
     city:     raw.city     || '',
+    // Sunders enrichment fields (populated by enrichment process)
+    sundersType: raw.sundersType || null,
+    sundersOperator: raw.sundersOperator || null,
+    sundersDirection: raw.sundersDirection || null,
+    sundersHeight: raw.sundersHeight || null,
   };
 }
 
@@ -364,16 +369,41 @@ async function main() {
   fs.writeFileSync(fullPath, JSON.stringify(unique));
   console.log(`  → ${fullPath}  (${(fs.statSync(fullPath).size / 1024 / 1024).toFixed(1)} MB)`);
 
-  // ── Compact/lite output — only fields needed for globe rendering ───────────
-  // Schema: [id, lat, lng, imageUrl|videoUrl, feedType, source]
-  const lite = unique.map(c => ({
-    i: c.id,
-    a: +c.lat.toFixed(5),
-    o: +c.lng.toFixed(5),
-    u: c.imageUrl || c.videoUrl,
-    t: c.feedType[0],     // 'i'=image, 'v'=video, 'h'=hybrid
-    s: c.source,
-  }));
+  // ── Compact/lite output — only fields needed for tile rendering ────────────
+  // Schema: id(i), lat(a), lon(o), imageUrl(u), videoUrl(x), feedType(t), source(s)
+  // For hybrid (h): both u and x are populated. For image (i): only u. For video (v): only x.
+  // Sunders enrichment: type(y), operator(z), direction(d), height(k) — all optional.
+  const lite = unique.map(c => {
+    const feedTypeChar = c.feedType[0];  // 'i'=image, 'v'=video, 'h'=hybrid
+    const obj = {
+      i: c.id,
+      a: +c.lat.toFixed(5),
+      o: +c.lng.toFixed(5),
+      t: feedTypeChar,
+      s: c.source,
+    };
+
+    // Populate URLs based on feed type
+    if (feedTypeChar === 'h') {
+      // Hybrid: store both URLs
+      obj.u = c.imageUrl || null;
+      obj.x = c.videoUrl || null;
+    } else if (feedTypeChar === 'v') {
+      // Video only
+      obj.x = c.videoUrl || null;
+    } else {
+      // Image only
+      obj.u = c.imageUrl || null;
+    }
+
+    // Sunders enrichment (will be null if not enriched yet)
+    if (c.sundersType) obj.y = c.sundersType;      // camera:type from OSM
+    if (c.sundersOperator) obj.z = c.sundersOperator;  // operator name
+    if (c.sundersDirection) obj.d = c.sundersDirection; // direction in degrees
+    if (c.sundersHeight) obj.k = c.sundersHeight;       // height in meters
+
+    return obj;
+  });
   const litePath = path.join(OUT_DIR, 'cameras-lite.json');
   fs.writeFileSync(litePath, JSON.stringify(lite));
   console.log(`  → ${litePath}  (${(fs.statSync(litePath).size / 1024 / 1024).toFixed(1)} MB)`);
@@ -388,6 +418,8 @@ async function main() {
     ts: new Date().toISOString(),
     n:  lite.length,
     d:  lite.map(c => [+c.a.toFixed(4), +c.o.toFixed(4), T_IDX[c.t] ?? 0]),
+    // Count enriched cameras (with sunders OSM data)
+    sunders: lite.filter(c => c.y || c.z || c.d || c.k).length,
   };
   const globePath = path.join(OUT_DIR, 'cameras-globe.json');
   fs.writeFileSync(globePath, JSON.stringify(globe));
