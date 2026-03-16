@@ -447,9 +447,16 @@
           <button class="filter-btn active" data-filter="flights-classification:military">Military</button>
           <button class="filter-btn active" data-filter="flights-classification:emergency">Emergency</button>
           <button class="filter-btn active" data-filter="flights-classification:ground">On Ground</button>
-          <button class="filter-btn active" data-filter="flights-overlay:gps">GPS</button>
-          <button class="filter-btn active" data-filter="flights-overlay:airspace">Airspace</button>
         </div>
+      </div>
+
+      <button class="layer-btn inactive" data-layer="airspace" data-has-filters="true">
+        <span class="collapse-chevron">▼</span>
+        <span class="dot"></span> Air Space
+      </button>
+      <div class="filter-container collapsed" data-filter-group="airspace">
+        <button class="filter-btn active" data-filter="airspace:gps">GPS</button>
+        <button class="filter-btn active" data-filter="airspace:airspace">Flight Restrictions</button>
       </div>
 
       <button class="layer-btn inactive" data-layer="satellites" data-has-filters="true">

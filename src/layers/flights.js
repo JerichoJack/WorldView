@@ -1078,17 +1078,6 @@ export async function initFlights(viewer) {
     });
   });
 
-  flightZonesDataSource = new Cesium.CustomDataSource('nofly-gps-zones');
-  await viewer.dataSources.add(flightZonesDataSource);
-  syncFlightZoneVisibility();
-  await refreshFlightZones(viewer);
-  if (noflyGpsPollTimer) {
-    window.clearInterval(noflyGpsPollTimer);
-  }
-  noflyGpsPollTimer = window.setInterval(() => {
-    if (enabled) refreshFlightZones(viewer);
-  }, NOFLY_GPS_POLL_MS);
-
   if (SERVER_HEAVY_MODE) {
     subscribeServerSnapshot('flights', {
       onData(payload) {
@@ -1120,8 +1109,6 @@ export async function initFlights(viewer) {
       setEnabled(val) {
         enabled = val;
         setServerSnapshotLayerEnabled('flights', enabled && isAnyClassificationActive());
-        syncFlightZoneVisibility();
-        if (enabled) refreshFlightZones(viewer);
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
           const aircraftClassification = state?.aircraftClassification ?? 'commercial';
@@ -1143,23 +1130,11 @@ export async function initFlights(viewer) {
           setServerSnapshotLayerEnabled('flights', enabled && isAnyClassificationActive());
         }
       },
-      setFlightZoneFilter(zoneType, filterEnabled) {
-        const zoneKey = (zoneType ?? '').toLowerCase();
-        if (zoneKey in flightZoneFilters) {
-          flightZoneFilters[zoneKey] = !!filterEnabled;
-          if (noflyGpsPayloadCache) {
-            renderFlightZones(noflyGpsPayloadCache);
-          } else if (enabled) {
-            refreshFlightZones(viewer);
-          }
-        }
-      },
       get count()    { return entityMap.size; },
       get provider() { return ACTIVE_PROVIDER; },
     };
   }
 
-  await fetchAndRender(viewer);
   setInterval(() => { if (enabled && isAnyClassificationActive()) fetchAndRender(viewer); }, POLL_MS);
 
   window.addEventListener('shadowgrid:follow', () => {
@@ -1175,8 +1150,7 @@ export async function initFlights(viewer) {
   return {
     setEnabled(val) {
       enabled = val;
-      syncFlightZoneVisibility();
-      if (enabled) refreshFlightZones(viewer);
+      if (enabled && isAnyClassificationActive()) fetchAndRender(viewer);
       entityMap.forEach((e, icaoHex) => {
         const state = trackStateMap.get(icaoHex);
         const aircraftClassification = state?.aircraftClassification ?? 'commercial';
@@ -1199,17 +1173,6 @@ export async function initFlights(viewer) {
         // the poll interval when all classifications are inactive to save API quota.
         if (enabled) {
           if (filterEnabled && isAnyClassificationActive()) fetchAndRender(viewer);
-        }
-      }
-    },
-    setFlightZoneFilter(zoneType, filterEnabled) {
-      const zoneKey = (zoneType ?? '').toLowerCase();
-      if (zoneKey in flightZoneFilters) {
-        flightZoneFilters[zoneKey] = !!filterEnabled;
-        if (noflyGpsPayloadCache) {
-          renderFlightZones(noflyGpsPayloadCache);
-        } else if (enabled) {
-          refreshFlightZones(viewer);
         }
       }
     },

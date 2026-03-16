@@ -11,6 +11,7 @@ import { initSatellites } from './layers/satellites.js';
 import { initTraffic } from './layers/traffic.js';
 import { initCCTV } from './layers/cctv.js';
 import { initInternet } from './layers/intrenet.js';
+import { initAirspace } from './layers/airspace.js';
 import { initControls } from './ui/Controls.js';
 import { initHUD, updateHUDCounts } from './ui/HUD.js';
 import { initCitySearch } from './ui/citySearch.js';
@@ -74,9 +75,12 @@ async function boot() {
   const internet = await initInternet(viewer);
   internet?.setEnabled(false); // Internet layer starts hidden
 
+  const airspace = await initAirspace(viewer);
+  airspace?.setEnabled(false); // Air Space layer starts hidden
+
   // Step 8 – UI
   setProgress(steps[7].pct, steps[7].label);
-  initControls(viewer, { flights, satellites, traffic, cctv, internet });
+  initControls(viewer, { flights, satellites, traffic, cctv, internet, airspace });
 
   initHUD(viewer);
   initCitySearch(viewer);
