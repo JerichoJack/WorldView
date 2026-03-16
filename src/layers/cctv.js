@@ -171,10 +171,10 @@ function renderPanel(cam) {
               style="width:100%;max-height:220px;display:block;background:#000">
             </video>
             <div id="cctv-video-err" style="display:none;color:rgba(255,100,100,0.8);font-size:10px;padding:16px;text-align:center;flex-direction:column;align-items:center;gap:6px">
-              ⚠ STREAM ${!videoUrl ? 'NOT AVAILABLE' : 'UNAVAILABLE (trying fallback)'}
-              ${videoUrl ? `<span style="font-size:9px;color:rgba(255,100,100,0.6)">Loading image snapshot below...</span>` : ''}
+              ⚠ VIDEO STREAM ${!videoUrl ? 'NOT AVAILABLE' : 'BLOCKED  (auth/CORS)'}
+              ${videoUrl ? `<span style="font-size:9px;color:rgba(255,100,100,0.6)">Showing latest snapshot below...</span>` : ''}
               <a href="${videoUrl || cam.u}" target="_blank" rel="noopener noreferrer"
-                 style="color:rgba(0,170,255,0.7);font-size:9px;text-decoration:underline">Open in browser ↗</a>
+                 style="color:rgba(0,170,255,0.7);font-size:9px;text-decoration:underline">${videoUrl ? 'Try direct link' : 'No video link'} ↗</a>
             </div>
           </div>
           <div style="margin-top:5px;display:flex;justify-content:flex-end">
@@ -250,11 +250,17 @@ function renderPanel(cam) {
         }
       } else if (kind === 'mp4') {
         videoEl.src = videoUrl;
-        videoEl.addEventListener('error', showVideoError, { once: true });
+        videoEl.addEventListener('error', (e) => {
+          console.warn(`[CCTV] MP4 error (${cam.i}):`, e.target.error?.message ?? e);
+          showVideoError();
+        }, { once: true });
       } else {
         // Unknown stream — try native video; if that fails, show link
         videoEl.src = videoUrl;
-        videoEl.addEventListener('error', showVideoError, { once: true });
+        videoEl.addEventListener('error', (e) => {
+          console.warn(`[CCTV] Unknown stream error (${cam.i}):`, e.target.error?.message ?? e);
+          showVideoError();
+        }, { once: true });
       }
 
     } else {

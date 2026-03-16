@@ -264,9 +264,10 @@ function normalise(raw, sourceName) {
   const lng = raw.lng ?? raw.longitude ?? null;
   if (lat == null || lng == null) return null;
 
-  // Check URLs availability
-  const imageUrl = raw.imageUrl ?? null;
-  const videoUrl = raw.videoUrl ?? null;
+  // Try multiple field names for URLs (trafficvision and others use different schemas)
+  const imageUrl = raw.imageUrl ?? raw.image ?? raw.image_url ?? raw.snapshot_url ?? raw.still ?? null;
+  const videoUrl = raw.videoUrl ?? raw.video ?? raw.video_url ?? raw.stream_url ?? raw.m3u8 ?? raw.hls ?? null;
+  
   if (!imageUrl && !videoUrl) return null;
 
   return {
@@ -374,11 +375,19 @@ async function enrichWithSunders(cameras) {
         if (!res.ok) continue;  // Skip cells with no data
         
         const sunders = await res.json();
-        if (!Array.isArray(sunders) || sunders.length === 0) continue;
+        
+        // Handle different API response formats
+        let nodes = sunders;
+        if (!Array.isArray(nodes)) {
+          // Try to extract array from common response structures
+          nodes = sunders.features || sunders.nodes || sunders.data || sunders.cameras || [];
+          if (!Array.isArray(nodes)) nodes = [];
+        }
+        if (nodes.length === 0) continue;
         
         // Match cameras in this cell to sunders nodes in this cell
         for (const cam of cellCameras) {
-          for (const sun of sunders) {
+          for (const sun of nodes) {
             const sunLat = parseFloat(sun.lat);
             const sunLng = parseFloat(sun.lon);
             if (!isFinite(sunLat) || !isFinite(sunLng)) continue;
@@ -455,16 +464,27 @@ async function fetchSundersOnlyCameras() {
         }
         
         const sunders = await res.json();
-        if (!Array.isArray(sunders)) {
-          console.log(`      ${region.name}: Unexpected format`);
+        
+        // Handle different API response formats
+        let nodes = sunders;
+        if (!Array.isArray(nodes)) {
+          // Try to extract array from common response structures
+          nodes = sunders.features || sunders.nodes || sunders.data || sunders.cameras || [];
+          if (!Array.isArray(nodes)) {
+            console.log(`      ${region.name}: Expected array but got ${typeof sunders}${Array.isArray(sunders) ? ` (array)` : `${Object.keys(sunders).slice(0,3).join(',')}`}`);
+            continue;
+          }
+        }
+        if (nodes.length === 0) {
+          console.log(`      ${region.name}: No nodes in response`);
           continue;
         }
         
-        totalFetched += sunders.length;
-        console.log(`      ${region.name}: ${sunders.length} nodes fetched`);
+        totalFetched += nodes.length;
+        console.log(`      ${region.name}: ${nodes.length} nodes fetched`);
         
         // Filter for surveillance cameras - be lenient with filtering
-        for (const sun of sunders) {
+        for (const sun of nodes) {
           if (!sun.tags) continue;
           const tags = sun.tags;
           
