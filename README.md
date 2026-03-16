@@ -235,8 +235,6 @@ node server/collectors/collectCameras.mjs --mode=trafficvision          # Legacy
 node server/collectors/collectCameras.mjs --mode=both                   # Both trafficvision + OSM (deduplicated)
 node server/collectors/collectCameras.mjs --osm-manufacturer="Axis"     # Custom manufacturer filter
 node server/collectors/collectCameras.mjs --osm-all=true                # All OSM surveillance (no filter)
-node server/collectors/collectCameras.mjs --mode=trafficvision --no-sunders          # Skip Sunders cross-reference
-node server/collectors/collectCameras.mjs --mode=trafficvision --sunders-radius=120  # Wider match radius (default 80 m)
 ```
 
 ### Run locally

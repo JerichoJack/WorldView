@@ -13,20 +13,10 @@
  *   trafficvision — Legacy feed mode from trafficvision.live sources
  *   both — Fetch both trafficvision feeds and OSM objects, deduplicated
  *
- * Sunders enrichment (trafficvision / both modes):
- *   After fetching TrafficVision cameras, each is matched by proximity against the
- *   Surveillance under Surveillance (sunders.uber.space) dataset, which carries OSM-derived
- *   FOV metadata: direction, camera:type, height, camera:angle, surveillance, operator, etc.
- *   Any TV camera found within SUNDERS_MATCH_RADIUS_M of a Sunders record gets those fields
- *   copied over, enabling FOV cones to be drawn in the CCTV layer just like OSM cameras.
- *   Pass --no-sunders to skip the enrichment step.
- *
  * Usage:
  *   node server/collectors/collectCameras.mjs
  *   node server/collectors/collectCameras.mjs --mode=trafficvision --sources=wsdot,511ny
  *   node server/collectors/collectCameras.mjs --mode=both
- *   node server/collectors/collectCameras.mjs --mode=trafficvision --no-sunders
- *   node server/collectors/collectCameras.mjs --sunders-radius=120
  *   node server/collectors/collectCameras.mjs --osm-manufacturer="Flock Safety"
  */
 
@@ -37,17 +27,6 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR   = path.resolve(__dirname, '../../public/camera-data');
 const BASE_URL  = 'https://trafficvision.live/camera-data';
-
-// ─── Surveillance under Surveillance (Sunders) enrichment config ──────────────
-const SUNDERS_BASE = 'https://sunders.uber.space';
-// Real endpoint discovered from leafletembed_functions.js:
-//   camera.php?bbox=W,S,E,N&zoom=Z&width=PX&height=PX
-// zoom=17 with a generous viewport discourages cluster (multi=yes) entries.
-const SUNDERS_ZOOM  = 17;
-const SUNDERS_PX    = 4096; // virtual viewport pixels — higher = less clustering
-// Bucket size (degrees) used when tiling TrafficVision camera positions for Sunders queries.
-// 0.1° ≈ 11 km — small enough that zoom=17 + 4096px avoids almost all clustering.
-const SUNDERS_TILE_DEG = 0.1;
 
 // ─── Source manifest (extracted from trafficvision.live main bundle) ──────────
 const SOURCES = [
@@ -276,10 +255,6 @@ const SKIP_EXISTING = args['skip-existing'] === true;
 const MODE          = String(args.mode ?? 'osm').toLowerCase();
 const OSM_MANUFACTURER = args['osm-manufacturer'] === true ? 'Flock Safety' : (args['osm-manufacturer'] ? String(args['osm-manufacturer']) : 'Flock Safety');
 const OSM_INCLUDE_ALL_SURVEILLANCE = String(args['osm-all'] ?? 'false').toLowerCase() === 'true';
-// Sunders enrichment is ON by default for trafficvision/both modes; pass --no-sunders to skip.
-const SUNDERS_ENRICH = args['no-sunders'] !== true;
-// Max distance (meters) to consider a Sunders camera a match for a TrafficVision camera.
-const SUNDERS_MATCH_RADIUS_M = args['sunders-radius'] ? parseFloat(String(args['sunders-radius'])) : 80;
 
 const sources = SUBSET
   ? SOURCES.filter(s => SUBSET.includes(s.source))
@@ -503,173 +478,6 @@ async function fetchOsmSurveillanceCameras() {
   return cameras;
 }
 
-/** Haversine distance in meters between two lat/lng points. */
-function haversineM(lat1, lon1, lat2, lon2) {
-  const R = 6_371_000;
-  const φ1 = (lat1 * Math.PI) / 180;
-  const φ2 = (lat2 * Math.PI) / 180;
-  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
-  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
-  const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/**
- * Fetch raw Sunders camera records for a bounding box using camera.php.
- * Returns an array of plain camera objects, or null if the endpoint is unreachable.
- * Cluster entries (multi=="yes") are filtered out — they carry no FOV data.
- */
-async function fetchSundersForBbox(west, south, east, north) {
-  const url = `${SUNDERS_BASE}/camera.php?bbox=${west},${south},${east},${north}&zoom=${SUNDERS_ZOOM}&width=${SUNDERS_PX}&height=${SUNDERS_PX}`;
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'ShadowGrid-Collector/1.0', 'Accept': 'application/json,*/*' },
-      signal: AbortSignal.timeout(25_000),
-    });
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (!text || text.trim().startsWith('<')) return null; // HTML error page
-    let data;
-    try { data = JSON.parse(text); } catch { return null; }
-    if (!Array.isArray(data)) return null;
-    // Filter out cluster summary entries
-    return data.filter(r => r.multi !== 'yes');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Normalise a raw Sunders camera.php record (flat JSON object) into
- * a plain struct with lat, lng, and FOV fields.
- * Response schema: { lat, lon, id, "camera:type", direction, height,
- *   "camera:angle", surveillance, "surveillance:type", "surveillance:zone",
- *   operator, "camera:mount", ... }
- */
-function normaliseSundersFeature(rec) {
-  const lat = Number(rec?.lat);
-  const lng = Number(rec?.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
-  // direction field may contain multiple values separated by ';' (e.g. "300;200")
-  // Use the first numeric value.
-  const rawDir = rec['camera:direction'] ?? rec['direction'] ?? null;
-  const dirStr = rawDir != null ? String(rawDir).split(';')[0].trim() : null;
-  const direction = parseDirection(dirStr);
-
-  const height = parseNumber(rec['height'] ?? null);
-  const angle  = parseNumber(rec['camera:angle'] ?? null);
-
-  return {
-    lat,
-    lng,
-    direction:        Number.isFinite(direction) ? direction : null,
-    cameraType:       rec['camera:type']       || null,
-    height:           Number.isFinite(height) ? height : null,
-    cameraAngle:      Number.isFinite(angle) ? angle : null,
-    surveillance:     rec['surveillance']      || null,
-    surveillanceType: rec['surveillance:type'] || null,
-    surveillanceZone: rec['surveillance:zone'] || null,
-    operator:         rec['operator']          || null,
-    mount:            rec['camera:mount']      || null,
-  };
-}
-
-/**
- * Cross-reference a list of TrafficVision camera records with Sunders.
- * For each TV camera that has a matching Sunders camera within SUNDERS_MATCH_RADIUS_M,
- * the FOV fields (direction, type, height, angle, etc.) are written into the TV record.
- *
- * Strategy:
- *   1. Bucket TV cameras into SUNDERS_TILE_DEG×SUNDERS_TILE_DEG lat/lng tiles.
- *   2. For each non-empty tile, issue one Sunders bbox query.
- *   3. Build an in-memory list of Sunders points for that tile.
- *   4. For each TV camera in the tile, find the nearest Sunders point <= radius.
- *   5. Copy FOV fields if a match is found (direction, type, height, angle, etc.).
- */
-async function enrichCamerasWithSunders(cameras) {
-  if (!cameras.length) return;
-
-  // ── Bucket by tile ──────────────────────────────────────────────────────────
-  const tiles = new Map(); // "tLat_tLng" → [camIndex, ...]
-  for (let i = 0; i < cameras.length; i++) {
-    const c = cameras[i];
-    const tLat = Math.floor(c.lat / SUNDERS_TILE_DEG) * SUNDERS_TILE_DEG;
-    const tLng = Math.floor(c.lng / SUNDERS_TILE_DEG) * SUNDERS_TILE_DEG;
-    const key = `${tLat}_${tLng}`;
-    if (!tiles.has(key)) tiles.set(key, []);
-    tiles.get(key).push(i);
-  }
-
-  console.log(`\n  Sunders enrichment — querying ${tiles.size} tile(s) (radius ${SUNDERS_MATCH_RADIUS_M} m)...`);
-
-  let tilesQueried = 0;
-  let tilesWithData = 0;
-  let totalMatched = 0;
-  let apiUnavailable = false;
-
-  for (const [key, indices] of tiles) {
-    const [tLat, tLng] = key.split('_').map(Number);
-    const south = tLat;
-    const north = tLat + SUNDERS_TILE_DEG;
-    const west  = tLng;
-    const east  = tLng + SUNDERS_TILE_DEG;
-
-    tilesQueried++;
-
-    const rawFeatures = await fetchSundersForBbox(west, south, east, north);
-    if (rawFeatures === null) {
-      // All endpoints failed — log once and skip remaining tiles to avoid hammering
-      if (!apiUnavailable) {
-        console.warn('    ⚠  Sunders API unreachable — FOV enrichment skipped.');
-        console.warn('       You can pass --no-sunders to suppress this message.');
-        apiUnavailable = true;
-      }
-      continue;
-    }
-
-    const sundersPoints = rawFeatures.map(normaliseSundersFeature).filter(Boolean);
-    if (!sundersPoints.length) continue;
-    tilesWithData++;
-
-    let tileMatched = 0;
-    for (const idx of indices) {
-      const cam = cameras[idx];
-      let best = null;
-      let bestDist = SUNDERS_MATCH_RADIUS_M;
-      for (const sp of sundersPoints) {
-        const d = haversineM(cam.lat, cam.lng, sp.lat, sp.lng);
-        if (d < bestDist) { bestDist = d; best = sp; }
-      }
-      if (!best) continue;
-
-      // Copy whichever FOV fields are available and not already set
-      if (best.direction   != null && cam.sundersDirection == null) cam.sundersDirection  = best.direction;
-      if (best.cameraType        && !cam.sundersType)               cam.sundersType        = best.cameraType;
-      if (best.height      != null && cam.sundersHeight == null)    cam.sundersHeight      = best.height;
-      if (best.cameraAngle != null && !cam.osmCameraAngle)          cam.osmCameraAngle     = best.cameraAngle;
-      if (best.surveillance      && !cam.osmSurveillance)           cam.osmSurveillance    = best.surveillance;
-      if (best.surveillanceType  && !cam.osmSurveillanceType)       cam.osmSurveillanceType = best.surveillanceType;
-      if (best.surveillanceZone  && !cam.osmSurveillanceZone)       cam.osmSurveillanceZone = best.surveillanceZone;
-      if (best.operator          && !cam.sundersOperator)           cam.sundersOperator    = best.operator;
-      if (best.mount             && !cam.osmMount)                   cam.osmMount           = best.mount;
-      // Tag the camera so the CCTV layer knows FOV came from Sunders cross-reference
-      cam.sundersEnriched = true;
-
-      tileMatched++;
-      totalMatched++;
-    }
-
-    process.stdout.write(
-      `    tile ${key}: ${sundersPoints.length} Sunders pts → ${tileMatched}/${indices.length} TV cameras enriched\n`,
-    );
-    // Polite rate-limiting between tile requests
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  console.log(`  Sunders enrichment complete: ${tilesQueried} tiles queried, ${tilesWithData} with data, ${totalMatched} cameras enriched.`);
-}
-
 /** Run an array of async tasks with max concurrency */
 async function pool(tasks, concurrency) {
   const results = [];
@@ -690,11 +498,7 @@ async function main() {
   console.log(`  Mode        : ${MODE}`);
   console.log(`  Sources     : ${sources.length}`);
   console.log(`  Concurrency : ${CONCURRENCY}`);
-  console.log(`  Output      : ${OUT_DIR}`);
-  if (MODE === 'trafficvision' || MODE === 'both') {
-    console.log(`  Sunders     : ${SUNDERS_ENRICH ? `enabled (radius ${SUNDERS_MATCH_RADIUS_M} m)` : 'disabled (--no-sunders)'}`);
-  }
-  console.log('');
+  console.log(`  Output      : ${OUT_DIR}\n`);
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
@@ -706,22 +510,13 @@ async function main() {
     results = await pool(tasks, CONCURRENCY);
     allCameras = results.flatMap(r => r.cameras);
     console.log(`\n  Total cameras: ${allCameras.length}`);
-    if (SUNDERS_ENRICH) {
-      await enrichCamerasWithSunders(allCameras);
-    } else {
-      console.log('  Sunders enrichment skipped (--no-sunders).');
-    }
   } else if (MODE === 'both') {
     console.log(`\n  Fetching trafficvision feeds...`);
     const tvTasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
     results = await pool(tvTasks, CONCURRENCY);
     const tvCameras = results.flatMap(r => r.cameras);
     console.log(`  Trafficvision cameras: ${tvCameras.length}`);
-    if (SUNDERS_ENRICH) {
-      await enrichCamerasWithSunders(tvCameras);
-    } else {
-      console.log('  Sunders enrichment skipped (--no-sunders).');
-    }
+    
     const osmCameras = await fetchOsmSurveillanceCameras();
     allCameras = [...tvCameras, ...osmCameras];
     console.log(`\n  Combined (before dedup): ${allCameras.length}`);
