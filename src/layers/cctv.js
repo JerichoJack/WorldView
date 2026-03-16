@@ -73,13 +73,19 @@ function freshUrl(url) {
   return clean + (clean.includes('?') ? '&' : '?') + 't=' + Date.now();
 }
 
-/** Classify a videoUrl into 'hls' | 'mp4' | 'other' */
+/** Classify a videoUrl into 'hls' | 'mp4' | 'transcode' | 'other' */
 function videoKind(url) {
   if (!url) return 'other';
-  if (/^(rtmp|rtsp|mms):/i.test(url)) return 'unsupported';
+  if (/^(rtmp|rtsp|mms):/i.test(url)) return 'transcode';
   if (/\.m3u8(\?|$)/i.test(url)) return 'hls';
   if (/\.mp4(\?|$)/i.test(url))  return 'mp4';
   return 'other';
+}
+
+function sourceProtocol(url) {
+  if (!url) return 'UNKNOWN';
+  const m = String(url).match(/^([a-z][a-z0-9+.-]*):/i);
+  return m?.[1] ? m[1].toUpperCase() : 'HTTP(S)';
 }
 
 /** Route camera streams through local proxy for CORS/auth handling and protocol conversion. */
@@ -154,8 +160,9 @@ function renderPanel(cam) {
     const hasImageFlag = cam.t === 'i' || cam.t === 'h';
     const sourceVideoUrl = hasVideoFlag ? (cam.x || cam.u) : null;     // prefer cam.x for video
     const kind         = videoKind(sourceVideoUrl);
-    const hasPlayableVideo = hasVideoFlag && sourceVideoUrl && kind !== 'unsupported';
-    const needsServerTranscode = hasVideoFlag && sourceVideoUrl && kind === 'unsupported';
+    const protocolLabel = sourceProtocol(sourceVideoUrl);
+    const needsServerTranscode = hasVideoFlag && sourceVideoUrl && kind === 'transcode';
+    const hasPlayableVideo = hasVideoFlag && !!sourceVideoUrl;
     const videoUrl  = hasPlayableVideo ? proxiedVideoUrl(sourceVideoUrl) : null;
     const hasImage  = hasImageFlag || !hasPlayableVideo;
     const imageUrl  = hasImage ? freshUrl(cam.u || cam.x) : null;  // fallback to video if no image
@@ -265,7 +272,7 @@ function renderPanel(cam) {
         }
       }
 
-      if (kind === 'hls') {
+      if (kind === 'hls' || needsServerTranscode) {
         if (Hls.isSupported()) {
           _hlsInstance = new Hls({ lowLatencyMode: true, maxBufferLength: 10 });
           _hlsInstance.loadSource(videoUrl);
@@ -320,16 +327,16 @@ function renderPanel(cam) {
       getCameraStreamHealth().then((health) => {
         if (!transcodeNote) return;
         if (!health) {
-          transcodeNote.textContent = 'Server transcoder status unavailable. Ensure /api/cameras/stream/health is reachable.';
+          transcodeNote.textContent = 'Server transcoder status unavailable. Ensure /api/localproxy/api/cameras/stream/health is reachable.';
           return;
         }
         if (health.ffmpegAvailable) {
-          transcodeNote.textContent = `Server transcoder ready (ffmpeg detected). Source protocol: ${kind.toUpperCase()}.`;
+          transcodeNote.textContent = `Server transcoder ready (ffmpeg detected). Source protocol: ${protocolLabel}.`;
           transcodeNote.style.borderColor = 'rgba(0,255,136,0.35)';
           transcodeNote.style.background = 'rgba(0,255,136,0.08)';
           transcodeNote.style.color = 'rgba(180,255,220,0.92)';
         } else {
-          transcodeNote.textContent = `Server transcoder unavailable: ffmpeg not installed. Source protocol: ${kind.toUpperCase()}.`;
+          transcodeNote.textContent = `Server transcoder unavailable: ffmpeg not installed. Source protocol: ${protocolLabel}.`;
           transcodeNote.style.borderColor = 'rgba(255,100,100,0.35)';
           transcodeNote.style.background = 'rgba(255,100,100,0.08)';
           transcodeNote.style.color = 'rgba(255,180,180,0.92)';
