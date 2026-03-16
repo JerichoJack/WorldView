@@ -845,7 +845,6 @@ function wireCameraControlButtons(viewer) {
 
   let currentPreviewUrl = null;
   let satellitePickArmed = false;
-  const EARTH_ENGINE_API_URL = 'https://earthengine.googleapis.com/v1alpha/projects/earthengine-legacy/image:computePixels';
   const satellitePickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
 
   const paintToggle = (btn, active) => {
@@ -967,23 +966,10 @@ function wireCameraControlButtons(viewer) {
   /**
    * Build Earth Engine thumbnail URL for satellite imagery
    */
-  function buildEarthEngineUrl(lat, lon, collectionId, bands, dateStr) {
-    // Generate a simple Earth Engine visualization thumbnail
-    // Using Earth Engine's public thumbnail service without API key for demo
-    const zoom = 11;
-    const width = 512;
-    const height = 512;
-
-    // Construct simple tile-based URL that approximates Earth Engine imagery
-    // For production, this would use proper Earth Engine API with authentication
-    const baseUrl = 'https://earthengine.googleapis.com/v1/projects/earthengine-legacy/thumbnails';
-    
-    // Generate a deterministic thumbnail ID based on location and imagery type
-    const thumbId = `shadowgrid_${lat.toFixed(4)}_${lon.toFixed(4)}_${collectionId}_${bands}_${dateStr || 'latest'}`;
-    const hash = btoa(thumbId).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-    
-    // Return a thumbnail URL pattern consistent with Earth Engine API
-    return `https://earthengine.googleapis.com/v1/projects/silken-alloy-467614-d7/thumbnails/${hash}-${hash}:getPixels`;
+  function buildEarthEngineConfigNote(collectionId, bands, dateStr) {
+    const parts = [collectionId, `bands=${bands}`];
+    if (dateStr) parts.push(`date=${dateStr}`);
+    return parts.join(' | ');
   }
 
   /**
@@ -1008,24 +994,23 @@ function wireCameraControlButtons(viewer) {
       const [collectionId] = collectionRaw.split('|');
       const bands = (satelliteBandsInput?.value ?? '').trim() || 'B4,B3,B2';
       const dateStr = satelliteDateInput.value || '';
-      const thumbUrl = buildEarthEngineUrl(location.lat, location.lon, collectionId, bands, dateStr);
-      
-      currentPreviewUrl = thumbUrl;
+      currentPreviewUrl = null;
+      const earthEngineNote = buildEarthEngineConfigNote(collectionId, bands, dateStr);
 
-      // Display placeholder with actual Earth Engine URL pattern
+      // Display a configured preview card without fabricating an invalid Earth Engine URL.
       if (satellitePreview) {
         satellitePreview.style.background = `linear-gradient(135deg, rgba(0,255,136,0.1) 0%, rgba(0,150,100,0.05) 100%), url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect fill="%23001a0f" width="512" height="512"/><text x="50%25" y="36%25" dominant-baseline="middle" text-anchor="middle" font-family="monospace" font-size="12" fill="%2300ff88" opacity="0.6">SATELLITE PREVIEW</text><text x="50%25" y="50%25" dominant-baseline="middle" text-anchor="middle" font-family="monospace" font-size="9" fill="%2300ff88" opacity="0.45">${collectionId}</text><text x="50%25" y="60%25" dominant-baseline="middle" text-anchor="middle" font-family="monospace" font-size="9" fill="%2300ff88" opacity="0.4">BANDS ${bands}</text><text x="50%25" y="72%25" dominant-baseline="middle" text-anchor="middle" font-family="monospace" font-size="9" fill="%2300ff88" opacity="0.3">${location.lat.toFixed(4)}°, ${location.lon.toFixed(4)}°</text></svg>')`;
         satellitePreview.style.backgroundSize = 'contain';
         satellitePreview.style.backgroundRepeat = 'no-repeat';
         satellitePreview.style.backgroundPosition = 'center';
         satellitePreview.innerHTML = `
-          <div style="position:absolute;bottom:8px;left:8px;right:8px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(0,255,136,0.4);word-break:break-all;background:rgba(0,0,0,0.6);padding:4px;border-radius:1px;">
-            ${thumbUrl}
+          <div style="position:absolute;bottom:8px;left:8px;right:8px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(0,255,136,0.48);word-break:break-word;background:rgba(0,0,0,0.6);padding:4px;border-radius:1px;">
+            Earth Engine request not configured in this build.<br/>${earthEngineNote}
           </div>
         `;
       }
 
-      setSatelliteStatus(`Ready: ${location.name}`);
+      setSatelliteStatus('Earth Engine needs OAuth or a server-side service-account proxy. A Google Maps API key will not authenticate it.', true);
       satelliteApplyBtn.disabled = false;
     } catch (err) {
       setSatelliteStatus('Error: ' + err.message, true);
