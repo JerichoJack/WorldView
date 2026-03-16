@@ -397,6 +397,20 @@ async function enrichWithSunders(cameras) {
   }
 }
 
+/** Run an array of async tasks with max concurrency */
+async function pool(tasks, concurrency) {
+  const results = [];
+  let i = 0;
+  async function worker() {
+    while (i < tasks.length) {
+      const idx = i++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return results;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n ShadowGrid Camera Collector`);
