@@ -156,7 +156,8 @@ function renderPanel(cam) {
     // For video (v): only cam.x is set; for image (i): only cam.u is set
     // For hybrid (h): both cam.u (image) and cam.x (video) are set
     // For sunders-only (source='sunders'): no URLs, show OSM metadata instead
-    const hasVideoFlag = cam.t === 'v' || cam.t === 'h';
+    // Temporary policy: hybrid feeds use snapshot-only rendering.
+    const hasVideoFlag = cam.t === 'v';
     const hasImageFlag = cam.t === 'i' || cam.t === 'h';
     const sourceVideoUrl = hasVideoFlag ? (cam.x || cam.u) : null;     // prefer cam.x for video
     const kind         = videoKind(sourceVideoUrl);
