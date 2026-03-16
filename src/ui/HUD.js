@@ -8,6 +8,7 @@
 import * as Cesium from 'cesium';
 import { followEntity, stopFollow, isFollowing, followingLabel } from '../core/follow.js';
 import { setFollowMode, setFlightGlow, hasAssetModel, setEnrichedTypecode } from '../layers/flights.js';
+import { clearSatelliteSelection, setSatelliteSelection } from '../layers/satellites.js';
 import { CITIES, flyTo } from '../core/camera.js';
 
 const DEV_MODE = ((import.meta.env.VITE_DEVELOPER_MODE ?? import.meta.env.VITE_DEV_MODE ?? 'false').toLowerCase() === 'true');
@@ -838,6 +839,7 @@ function initEntityPicker(viewer) {
         setFlightGlow(currentSelectedFlightId, false);
         currentSelectedFlightId = null;
       }
+      clearSatelliteSelection();
       panel.style.display = 'none';
       return;
     }
@@ -855,6 +857,8 @@ function initEntityPicker(viewer) {
         currentSelectedFlightId = null;
       }
 
+      setSatelliteSelection(primaryEntity, true);
+
       const satellites = satelliteEntities.map(getSatellitePanelData);
       panel.style.display = 'block';
       panel.innerHTML = satelliteListHtml(satellites);
@@ -870,6 +874,7 @@ function initEntityPicker(viewer) {
     const type = primaryType;
 
     if (type === 'flight') {
+      clearSatelliteSelection();
       const icao     = (props.icao?.getValue() ?? String(entity.id).replace('flight-','')).toUpperCase();
       const rawCallsign = (props.callsign?.getValue() ?? '').trim();
       // Don't fall back to ICAO hex — use it for display only if no real callsign
@@ -908,6 +913,7 @@ function initEntityPicker(viewer) {
       renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification, ...info }, viewer, entity);
 
     } else if (type === 'satellite') {
+      setSatelliteSelection(entity, true);
       const { name, provider, isMilitary, orbitType, application, crewedStatus } = getSatellitePanelData(entity);
       panel.style.display = 'block';
       panel.innerHTML = satelliteHtml({ name, provider, isMilitary, orbitType, application, crewedStatus });
@@ -919,6 +925,7 @@ function initEntityPicker(viewer) {
         setFlightGlow(currentSelectedFlightId, false);
         currentSelectedFlightId = null;
       }
+      clearSatelliteSelection();
 
       const domain = (props.domain?.getValue() ?? 'flight').toLowerCase();
       const name = props.name?.getValue() ?? 'Unnamed Region';
@@ -1190,6 +1197,7 @@ function wirePanelClose(panel) {
       setFlightGlow(currentSelectedFlightId, false);
       currentSelectedFlightId = null;
     }
+    clearSatelliteSelection();
     panel.style.display = 'none';
   });
 }
@@ -1216,6 +1224,7 @@ function wireFollowButton(panel, viewer, entity, label, type) {
     } else {
       // ── FOLLOW ────────────────────────────────────────────────────────────
       if (icaoHex) setFollowMode(icaoHex, true);
+      if (type === 'satellite') setSatelliteSelection(entity, true);
 
       followEntity(viewer, entity, {
         label,
@@ -1243,6 +1252,8 @@ function wireSatelliteButtons(panel, viewer, satellites) {
     setFollowBtnState(btn, alreadyFollowing);
 
     btn.addEventListener('click', () => {
+      setSatelliteSelection(sat.entity, true);
+
       if (isFollowing() && followingLabel() === sat.name) {
         stopFollow(false, true);
         setFollowBtnState(btn, false);

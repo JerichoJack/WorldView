@@ -129,9 +129,6 @@ export function initControls(viewer, layers) {
         if (prefix === 'flights-classification') {
           layerName = 'flights';
           filterCategory = 'classification';
-        } else if (prefix === 'flights-type') {
-          layerName = 'flights';
-          filterCategory = 'type';
         } else if (prefix === 'flights-overlay') {
           layerName = 'flights';
           filterCategory = 'overlay';
@@ -149,8 +146,6 @@ export function initControls(viewer, layers) {
       const layer = layers[layerName];
       if (layerName === 'flights' && filterCategory === 'classification') {
         layer?.setAircraftClassificationFilter?.(filterType, isActive);
-      } else if (layerName === 'flights' && filterCategory === 'type') {
-        layer?.setAircraftTypeFilter?.(filterType, isActive);
       } else if (layerName === 'flights' && filterCategory === 'overlay') {
         layer?.setFlightZoneFilter?.(filterType, isActive);
       } else {

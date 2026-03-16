@@ -788,17 +788,6 @@ const flightZoneFilters = {
   airspace: true,
 };
 
-// Aircraft type filter state — all enabled by default
-const aircraftTypeFilters = {
-  heavy: true,
-  widebody: true,
-  jet: true,
-  turboprop: true,
-  helicopter: true,
-  light: true,
-  generic: true,
-};
-
 /**
  * Returns true if at least one aircraft classification is active.
  * When false, there is no point fetching flight data from the proxy.
@@ -810,11 +799,10 @@ function isAnyClassificationActive() {
 /**
  * Determine if a flight entity should be visible based on enabled state and filters
  */
-function shouldShowFlight(aircraftClassification, aircraftType) {
+function shouldShowFlight(aircraftClassification) {
   if (!enabled) return false;
   const classKey = (aircraftClassification ?? 'commercial').toLowerCase();
-  const typeKey = (aircraftType ?? 'generic').toLowerCase();
-  return aircraftClassificationFilters[classKey] && aircraftTypeFilters[typeKey];
+  return aircraftClassificationFilters[classKey];
 }
 
 const EARTH_RADIUS_M = 6378137;
@@ -847,9 +835,8 @@ function publishSystemStatus(msg, level = 'ok', key = `${level}:${msg}`) {
 function applyFlatIconVisibility() {
   for (const [id, entity] of entityMap) {
     const state = trackStateMap.get(id);
-    const aircraftType = state?.aircraftType ?? 'generic';
     const aircraftClassification = state?.aircraftClassification ?? 'commercial';
-    const shouldShow = shouldShowFlight(aircraftClassification, aircraftType) && !hideAllFlatIcons;
+    const shouldShow = shouldShowFlight(aircraftClassification) && !hideAllFlatIcons;
     if (entity.billboard) {
       entity.billboard.show = new Cesium.ConstantProperty(shouldShow);
     }
@@ -1137,9 +1124,8 @@ export async function initFlights(viewer) {
         if (enabled) refreshFlightZones(viewer);
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
-          const aircraftType = state?.aircraftType ?? 'generic';
           const aircraftClassification = state?.aircraftClassification ?? 'commercial';
-          e.show = shouldShowFlight(aircraftClassification, aircraftType);
+          e.show = shouldShowFlight(aircraftClassification);
         });
         applyFlatIconVisibility();
       },
@@ -1149,26 +1135,12 @@ export async function initFlights(viewer) {
           aircraftClassificationFilters[classKey] = filterEnabled;
           entityMap.forEach((e, icaoHex) => {
             const state = trackStateMap.get(icaoHex);
-            const aircraftType = state?.aircraftType ?? 'generic';
             const aircraftClassification = state?.aircraftClassification ?? 'commercial';
-            e.show = shouldShowFlight(aircraftClassification, aircraftType);
+            e.show = shouldShowFlight(aircraftClassification);
           });
           applyFlatIconVisibility();
           // Enable or suspend proxy polling based on whether any classification is still active.
           setServerSnapshotLayerEnabled('flights', enabled && isAnyClassificationActive());
-        }
-      },
-      setAircraftTypeFilter(aircraftType, filterEnabled) {
-        const typeKey = (aircraftType ?? 'generic').toLowerCase();
-        if (typeKey in aircraftTypeFilters) {
-          aircraftTypeFilters[typeKey] = filterEnabled;
-          entityMap.forEach((e, icaoHex) => {
-            const state = trackStateMap.get(icaoHex);
-            const acType = state?.aircraftType ?? 'generic';
-            const acClassification = state?.aircraftClassification ?? 'commercial';
-            e.show = shouldShowFlight(acClassification, acType);
-          });
-          applyFlatIconVisibility();
         }
       },
       setFlightZoneFilter(zoneType, filterEnabled) {
@@ -1207,9 +1179,8 @@ export async function initFlights(viewer) {
       if (enabled) refreshFlightZones(viewer);
       entityMap.forEach((e, icaoHex) => {
         const state = trackStateMap.get(icaoHex);
-        const aircraftType = state?.aircraftType ?? 'generic';
         const aircraftClassification = state?.aircraftClassification ?? 'commercial';
-        e.show = shouldShowFlight(aircraftClassification, aircraftType);
+        e.show = shouldShowFlight(aircraftClassification);
       });
       applyFlatIconVisibility();
     },
@@ -1220,9 +1191,8 @@ export async function initFlights(viewer) {
         // Update visibility of all entities
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
-          const aircraftType = state?.aircraftType ?? 'generic';
           const aircraftClassification = state?.aircraftClassification ?? 'commercial';
-          e.show = shouldShowFlight(aircraftClassification, aircraftType);
+          e.show = shouldShowFlight(aircraftClassification);
         });
         applyFlatIconVisibility();
         // Trigger an immediate fetch when re-enabling after all were off; suppress
@@ -1230,20 +1200,6 @@ export async function initFlights(viewer) {
         if (enabled) {
           if (filterEnabled && isAnyClassificationActive()) fetchAndRender(viewer);
         }
-      }
-    },
-    setAircraftTypeFilter(aircraftType, filterEnabled) {
-      const typeKey = (aircraftType ?? 'generic').toLowerCase();
-      if (typeKey in aircraftTypeFilters) {
-        aircraftTypeFilters[typeKey] = filterEnabled;
-        // Update visibility of all entities
-        entityMap.forEach((e, icaoHex) => {
-          const state = trackStateMap.get(icaoHex);
-          const acType = state?.aircraftType ?? 'generic';
-          const acClassification = state?.aircraftClassification ?? 'commercial';
-          e.show = shouldShowFlight(acClassification, acType);
-        });
-        applyFlatIconVisibility();
       }
     },
     setFlightZoneFilter(zoneType, filterEnabled) {
@@ -1681,7 +1637,7 @@ function renderAircraft(viewer, aircraft) {
       const entity = entityMap.get(a.id);
       entity.position = getTrackPositionProperty(a.id);
       // Re-check visibility on every update to respect current filters
-      entity.show = shouldShowFlight(classification, shape);
+      entity.show = shouldShowFlight(classification);
       if (entity.billboard) {
         // Check if this aircraft is currently selected (has glow enabled)
         const useGlow = selectedFlightId === a.id;
@@ -1713,7 +1669,7 @@ function renderAircraft(viewer, aircraft) {
       const entity = viewer.entities.add({
         id:       `flight-${a.id}`,
         position: getTrackPositionProperty(a.id),
-        show:     shouldShowFlight(classification, shape),  // Initialize based on both filters
+        show:     shouldShowFlight(classification),
         billboard: {
           image:                    icon,
           width:                    iconSizePx,
@@ -1723,7 +1679,7 @@ function renderAircraft(viewer, aircraft) {
           scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.6, 8e6, 0.65),
           color:                    Cesium.Color.WHITE,
           disableDepthTestDistance: 5e6,
-          show:                     shouldShowFlight(classification, shape) && !hideAllFlatIcons,
+          show:                     shouldShowFlight(classification) && !hideAllFlatIcons,
         },
         label: {
           text:                     a.callsign || a.id.toUpperCase(),
@@ -1736,7 +1692,7 @@ function renderAircraft(viewer, aircraft) {
           scaleByDistance:          new Cesium.NearFarScalar(1e3, 1.0, 3e6, 0),
           translucencyByDistance:   new Cesium.NearFarScalar(1e3, 1.0, 2e6, 0),
           disableDepthTestDistance: 5e6,
-          show:                     shouldShowFlight(classification, shape) && !hideAllFlatIcons,
+          show:                     shouldShowFlight(classification) && !hideAllFlatIcons,
         },
         properties: {
           type:           'flight',
