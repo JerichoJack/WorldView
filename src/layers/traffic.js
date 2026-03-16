@@ -1,6 +1,6 @@
 /**
  * File: src/layers/traffic.js
- * Purpose: Traffic layer combining road network extraction and animated vehicle particles.
+ * Purpose: Traffic layer rendering road congestion as Google Maps-style colored polylines.
  * Notes: Uses provider auto-selection (Overpass/Google/server snapshot) and adaptive profiles.
  * Last updated: 2026-03-13
  */
@@ -14,9 +14,6 @@ const GOOGLE_SERVER_ROADS_API = '/api/localproxy/api/traffic/google';
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const TRAFFIC_PROVIDER = (import.meta.env.VITE_TRAFFIC_PROVIDER ?? 'auto').toLowerCase();
 const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true';
-const TRAFFIC_RENDER_MAX_DISTANCE_M = 800000;
-const TRAFFIC_PARTICLE_HEIGHT_OFFSET_M = 1.5;
-const TRAFFIC_PARTICLE_SIZE_PX = 7;
 const TRAFFIC_REBUILD_MINUTES = 5;
 const GOOGLE_REFRESH_MS = 90_000;
 const GOOGLE_DEPARTURE_OFFSET_MS = 5 * 60_000;
@@ -24,21 +21,20 @@ const TRAFFIC_MAX_PARTICLES_RAW = Number.parseInt(import.meta.env.VITE_TRAFFIC_M
 const TRAFFIC_MAX_PARTICLES = Number.isFinite(TRAFFIC_MAX_PARTICLES_RAW)
   ? Math.min(Math.max(TRAFFIC_MAX_PARTICLES_RAW, 100), 50_000)
   : 10_000;
-const VEHICLE_COLORS = {
-  car:  '#ffcc00',     // yellow
-  bus:  '#ff6b35',     // orange
-  truck: '#ee5a6f',    // red
-  motorcycle: '#4ecdc4' // teal
+const CONGESTION_COLORS = {
+  free:     new Cesium.Color(0.384, 0.784, 0.227, 0.92), // #62c83a green  - free flow
+  moderate: new Cesium.Color(0.969, 0.788, 0.282, 0.92), // #f7c948 yellow - moderate
+  slow:     new Cesium.Color(0.957, 0.486, 0.180, 0.92), // #f47c2e orange - slow
+  jam:      new Cesium.Color(0.753, 0.224, 0.169, 0.92), // #c0392b red    - standstill
 };
+const ROAD_LINE_WIDTHS = { 3: 8, 2: 6, 1: 4, 0: 3 };
 
 let enabled = false;
 let viewer = null;
-let roadNetwork = new Map(); // bbox -> {roads: [], particles: [], ready: bool}
-let particles = [];
-let animationHandle = null;
+let roadNetwork = new Map(); // bbox -> {roads: [], ready: bool}
 let currentBbox = null;
 let roadPrimitives = [];
-let particleCollection = null;
+let currentRoadSegmentCount = 0;
 let trafficProfile = { label: 'daytime', densityMult: 1.0, speedMult: 1.0, maxParticles: TRAFFIC_MAX_PARTICLES };
 let lastProfileMinute = -1;
 let trafficMode = 'osm-sim';
@@ -294,14 +290,14 @@ async function refreshGoogleTrafficForCurrentBbox() {
   try {
     const roads = await fetchGoogleTrafficRoads(currentBbox);
     if (!roads.length) {
-      console.warn('[Traffic] Google traffic returned no segments; keeping previous particles');
+      console.warn('[Traffic] Google traffic returned no segments; keeping previous roads');
       return;
     }
     await attachTerrainHeights(roads);
-    spawnParticles(roads);
+    renderRoads(roads);
     console.info(`[Traffic] Google traffic live refresh: ${roads.length} segments`);
   } catch (err) {
-    console.warn('[Traffic] Google traffic refresh failed, continuing with existing particles:', err.message);
+    console.warn('[Traffic] Google traffic refresh failed, continuing with existing roads:', err.message);
   } finally {
     googleRefreshInFlight = false;
   }
@@ -323,13 +319,9 @@ async function applyServerTrafficSnapshot(snapshot) {
   await attachTerrainHeights(roads);
   if (currentBbox) {
     const key = `${currentBbox.west}_${currentBbox.south}_${currentBbox.east}_${currentBbox.north}`;
-    roadNetwork.set(key, { roads, particles: [], ready: true });
+    roadNetwork.set(key, { roads, ready: true });
   }
-  spawnParticles(roads);
-
-  if (!animationHandle && particles.length) {
-    animate();
-  }
+  renderRoads(roads);
 
   console.info(`[Traffic] Server snapshot refresh: ${roads.length} segments`);
 }
@@ -437,7 +429,7 @@ async function fetchOSMRoads(bbox) {
     return [];
   }
 
-  roadNetwork.set(key, { roads: [], particles: [], ready: false });
+  roadNetwork.set(key, { roads: [], ready: false });
 
   try {
     // Overpass query: fetch major roads in bbox
@@ -498,172 +490,72 @@ async function fetchOSMRoads(bbox) {
 }
 
 /**
- * Create particles on roads
+ * Map a road segment to a congestion level based on traffic mode and time-of-day profile.
+ * Returns: 'free' | 'moderate' | 'slow' | 'jam'
  */
-function spawnParticles(roads) {
-  particles = [];
-  const vehicleTypes = Object.keys(VEHICLE_COLORS);
-  const profile = trafficMode === 'google-live'
-    ? { densityMult: 1.0, speedMult: 1.0, maxParticles: TRAFFIC_MAX_PARTICLES }
-    : trafficProfile;
-  const orderedRoads = [...roads].sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    return b.totalLength - a.totalLength;
-  });
-
-  for (const road of orderedRoads) {
-    if (particles.length >= profile.maxParticles) break;
-
-    const desiredVehicles = Math.ceil((road.totalLength / 140) * road.density * profile.densityMult);
-    const numVehicles = Math.max(road.priority >= 2 ? 1 : 0, desiredVehicles);
-
-    for (let i = 0; i < numVehicles; i++) {
-      if (particles.length >= profile.maxParticles) break;
-
-      // Random position along road
-      let distAlong = Math.random() * road.totalLength;
-      let segmentIdx = 0;
-      let segmentDist = 0;
-
-      for (let j = 0; j < road.coords.length - 1; j++) {
-        const segLen = distance(
-          road.coords[j].lat, road.coords[j].lon,
-          road.coords[j + 1].lat, road.coords[j + 1].lon
-        );
-
-        if (segmentDist + segLen >= distAlong) {
-          segmentIdx = j;
-          segmentDist = distAlong - segmentDist;
-          break;
-        }
-        segmentDist += segLen;
-      }
-
-      const roadSeg = road.coords[segmentIdx];
-      const nextSeg = road.coords[Math.min(segmentIdx + 1, road.coords.length - 1)];
-      
-      const headingAngle = bearing(roadSeg.lat, roadSeg.lon, nextSeg.lat, nextSeg.lon);
-
-      particles.push({
-        roadId: road.id,
-        position: { lat: roadSeg.lat, lon: roadSeg.lon },
-        height: road.vertexHeights?.[segmentIdx] ?? 0,
-        heading: (headingAngle * Math.PI) / 180,
-        distAlong,
-        roadLength: road.totalLength,
-        speed: road.speed * profile.speedMult * (0.8 + Math.random() * 0.4), // ±20% variation
-        type: vehicleTypes[Math.floor(Math.random() * vehicleTypes.length)],
-        road,
-        segmentIdx,
-        segmentDist,
-        currentRoad: road
-      });
-    }
+function getCongestionLevel(road, profile) {
+  if (trafficMode === 'google-live') {
+    if (road.name?.includes('TRAFFIC_JAM')) return 'jam';
+    if (road.name?.includes('SLOW')) return 'slow';
+    return 'free';
   }
+  // OSM simulation: approximate congestion from road class + density multiplier
+  const dm = profile.densityMult;
+  const p = road.priority ?? 0;
+  if (p >= 3) return dm >= 0.85 ? 'slow'     : dm >= 0.45 ? 'moderate' : 'free';
+  if (p === 2) return dm >= 0.85 ? 'slow'     : 'moderate';
+  return               dm >= 0.85 ? 'moderate' : 'free';
+}
 
-  console.info(`[Traffic] Spawned ${particles.length} vehicles`);
+function getRoadLineWidth(road) {
+  return ROAD_LINE_WIDTHS[road.priority ?? 0] ?? 3;
 }
 
 /**
- * Update particle positions and render
+ * Render road segments as Google Maps-style color-coded polylines draped on terrain.
+ * Green = free flow - Yellow = moderate - Orange = slow - Red = standstill
+ * Segments are batched by congestion level into GroundPolylinePrimitives for efficiency.
  */
-function updateParticles() {
-  for (const p of particles) {
-    // Advance along distance with speed (m/s)
-    const dt = 0.05; // 50ms per frame
-    p.distAlong += p.speed * dt;
+function renderRoads(roads) {
+  roadPrimitives.forEach(p => viewer.scene.primitives.remove(p));
+  roadPrimitives = [];
 
-    // Wrap around road
-    if (p.distAlong > p.roadLength) {
-      p.distAlong = 0;
-    }
+  if (!roads.length || !viewer) return;
 
-    // Find position along road
-    let dist = 0;
-    for (let i = 0; i < p.currentRoad.coords.length - 1; i++) {
-      const segLen = distance(
-        p.currentRoad.coords[i].lat,
-        p.currentRoad.coords[i].lon,
-        p.currentRoad.coords[i + 1].lat,
-        p.currentRoad.coords[i + 1].lon
-      );
+  const profile = trafficMode === 'google-live' ? { densityMult: 1.0 } : trafficProfile;
 
-      if (dist + segLen >= p.distAlong) {
-        const ratio = (p.distAlong - dist) / segLen;
-        const curr = p.currentRoad.coords[i];
-        const next = p.currentRoad.coords[i + 1];
-
-        p.position = {
-          lat: curr.lat + (next.lat - curr.lat) * ratio,
-          lon: curr.lon + (next.lon - curr.lon) * ratio
-        };
-        p.height = segmentHeight(p.currentRoad, i, i + 1, ratio);
-
-        p.heading = (bearing(curr.lat, curr.lon, next.lat, next.lon) * Math.PI) / 180;
-        break;
-      }
-      dist += segLen;
-    }
+  // Group segments by congestion level for efficient primitive batching
+  const groups = { free: [], moderate: [], slow: [], jam: [] };
+  for (const road of roads) {
+    if (!road.coords || road.coords.length < 2) continue;
+    groups[getCongestionLevel(road, profile)].push(road);
   }
-}
 
-/**
- * Render particles on the globe
- */
-function renderParticles() {
-  if (!particleCollection) {
-    particleCollection = viewer.scene.primitives.add(new Cesium.PointPrimitiveCollection());
-    roadPrimitives.push(particleCollection);
-  }
-  particleCollection.removeAll();
+  for (const [level, levelRoads] of Object.entries(groups)) {
+    if (!levelRoads.length) continue;
 
-  for (const p of particles) {
-    // Skip if too far from camera
-    const cartesian = Cesium.Cartesian3.fromDegrees(p.position.lon, p.position.lat, 0);
-    const cameraDistance = Cesium.Cartesian3.distance(viewer.camera.position, cartesian);
+    const instances = levelRoads.map(road =>
+      new Cesium.GeometryInstance({
+        geometry: new Cesium.GroundPolylineGeometry({
+          positions: road.coords.map(c => Cesium.Cartesian3.fromDegrees(c.lon, c.lat)),
+          width: getRoadLineWidth(road),
+        }),
+      })
+    );
 
-    if (cameraDistance > TRAFFIC_RENDER_MAX_DISTANCE_M) continue;
-
-    const colorStr = VEHICLE_COLORS[p.type];
-    const rgb = parseInt(colorStr.substr(1), 16);
-    const r = (rgb >> 16) & 255;
-    const g = (rgb >> 8) & 255;
-    const b = rgb & 255;
-
-    particleCollection.add({
-      position: Cesium.Cartesian3.fromDegrees(
-        p.position.lon,
-        p.position.lat,
-        (p.height ?? 0) + TRAFFIC_PARTICLE_HEIGHT_OFFSET_M
-      ),
-      color: new Cesium.Color(r / 255, g / 255, b / 255, 0.95),
-      pixelSize: TRAFFIC_PARTICLE_SIZE_PX,
-      outlineColor: Cesium.Color.BLACK.withAlpha(0.5),
-      outlineWidth: 1,
-      disableDepthTestDistance: 0,
-      scaleByDistance: new Cesium.NearFarScalar(2_000, 1.15, 900_000, 0.55),
+    const primitive = new Cesium.GroundPolylinePrimitive({
+      geometryInstances: instances,
+      appearance: new Cesium.PolylineMaterialAppearance({
+        material: Cesium.Material.fromType('Color', { color: CONGESTION_COLORS[level] }),
+      }),
     });
-  }
-}
 
-/**
- * Main animation loop
- */
-function animate() {
-  if (!enabled) return;
-
-  if (trafficMode === 'osm-sim' && refreshTrafficProfile() && currentBbox) {
-    const key = `${currentBbox.west}_${currentBbox.south}_${currentBbox.east}_${currentBbox.north}`;
-    const cached = roadNetwork.get(key);
-    if (cached?.roads?.length) {
-      spawnParticles(cached.roads);
-    }
+    viewer.scene.primitives.add(primitive);
+    roadPrimitives.push(primitive);
   }
 
-  updateParticles();
-  renderParticles();
-
-  animationHandle = requestAnimationFrame(animate);
+  currentRoadSegmentCount = roads.length;
+  console.info(`[Traffic] Rendered ${roads.length} road segments (traffic flow style)`);
 }
 
 export async function initTraffic(viewerInstance) {
@@ -708,7 +600,7 @@ export async function initTraffic(viewerInstance) {
             setServerSnapshotLayerEnabled('traffic', true);
           } else if (trafficMode === 'google-live') {
             await refreshGoogleTrafficForCurrentBbox();
-            if (!particles.length) {
+            if (!roadPrimitives.length) {
               console.warn('[Traffic] Falling back to OSM simulation for this viewport');
               trafficMode = 'osm-sim';
             }
@@ -719,17 +611,24 @@ export async function initTraffic(viewerInstance) {
             const roads = await fetchOSMRoads(bbox);
             if (roads.length > 0) {
               await attachTerrainHeights(roads);
-              spawnParticles(roads);
+              renderRoads(roads);
             }
           }
-
-          if (particles.length) animate();
 
           if (refreshTimer) clearInterval(refreshTimer);
           if (!SERVER_HEAVY_MODE && trafficMode === 'google-live') {
             refreshTimer = setInterval(() => {
               refreshGoogleTrafficForCurrentBbox();
             }, GOOGLE_REFRESH_MS);
+          } else if (!SERVER_HEAVY_MODE && trafficMode === 'osm-sim') {
+            refreshTimer = setInterval(async () => {
+              if (!enabled || !currentBbox) return;
+              if (refreshTrafficProfile()) {
+                const key = `${currentBbox.west}_${currentBbox.south}_${currentBbox.east}_${currentBbox.north}`;
+                const cached = roadNetwork.get(key);
+                if (cached?.roads?.length) renderRoads(cached.roads);
+              }
+            }, TRAFFIC_REBUILD_MINUTES * 60_000);
           }
         }
       } else {
@@ -740,18 +639,13 @@ export async function initTraffic(viewerInstance) {
           clearInterval(refreshTimer);
           refreshTimer = null;
         }
-        if (animationHandle) {
-          cancelAnimationFrame(animationHandle);
-          animationHandle = null;
-        }
         roadPrimitives.forEach(p => viewer.scene.primitives.remove(p));
         roadPrimitives = [];
-        particleCollection = null;
       }
     },
 
     get count() {
-      return particles.length;
+      return currentRoadSegmentCount;
     }
   };
 }
