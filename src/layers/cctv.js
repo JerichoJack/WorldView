@@ -130,6 +130,12 @@ function renderPanel(cam) {
     const hasImage  = cam.t === 'i' || cam.t === 'h';
     const videoUrl  = hasVideo ? (cam.x || cam.u) : null;     // prefer cam.x for video
     const imageUrl  = hasImage ? freshUrl(cam.u || cam.x) : null;  // fallback to video if no image
+    
+    // Log debug info for hybrid cameras to troubleshoot STREAM UNAVAILABLE
+    if (cam.t === 'h') {
+      console.log(`[CCTV] Hybrid camera ${cam.i}: cam.u=${!!cam.u}, cam.x=${!!cam.x}, videoUrl=${!!videoUrl}`);
+    }
+    
     const isSundersOnly = !videoUrl && !imageUrl;
     const kind      = videoKind(videoUrl);
     const typeLabel = isSundersOnly ? 'OSM LOCATION' : cam.t === 'v' ? 'LIVE VIDEO' : cam.t === 'h' ? 'HYBRID' : 'SNAPSHOT';
@@ -165,8 +171,9 @@ function renderPanel(cam) {
               style="width:100%;max-height:220px;display:block;background:#000">
             </video>
             <div id="cctv-video-err" style="display:none;color:rgba(255,100,100,0.8);font-size:10px;padding:16px;text-align:center;flex-direction:column;align-items:center;gap:6px">
-              ⚠ STREAM UNAVAILABLE
-              <a href="${videoUrl}" target="_blank" rel="noopener noreferrer"
+              ⚠ STREAM ${!videoUrl ? 'NOT AVAILABLE' : 'UNAVAILABLE (trying fallback)'}
+              ${videoUrl ? `<span style="font-size:9px;color:rgba(255,100,100,0.6)">Loading image snapshot below...</span>` : ''}
+              <a href="${videoUrl || cam.u}" target="_blank" rel="noopener noreferrer"
                  style="color:rgba(0,170,255,0.7);font-size:9px;text-decoration:underline">Open in browser ↗</a>
             </div>
           </div>
@@ -207,6 +214,22 @@ function renderPanel(cam) {
       function showVideoError() {
         if (videoEl) videoEl.style.display = 'none';
         if (errEl)   errEl.style.display = 'flex';
+        // For hybrid cameras, also try to show the fallback image
+        if (cam.t === 'h' && imageUrl) {
+          setTimeout(() => {
+            const imgFallback = document.createElement('img');
+            imgFallback.src = imageUrl;
+            imgFallback.style.cssText = 'max-width:100%;max-height:220px;display:block;width:100%;object-fit:contain;margin-top:8px;border:1px solid rgba(0,255,136,0.15);';
+            imgFallback.onerror = () => imgFallback.remove();
+            if (errEl) {
+              const fallbackLabel = document.createElement('div');
+              fallbackLabel.textContent = '↓ Image snapshot fallback:';
+              fallbackLabel.style.cssText = 'font-size:9px;margin-top:8px;color:rgba(0,255,136,0.6);margin-bottom:4px;';
+              errEl.insertAdjacentElement('afterend', fallbackLabel);
+              fallbackLabel.insertAdjacentElement('afterend', imgFallback);
+            }
+          }, 100);
+        }
       }
 
       if (kind === 'hls') {
@@ -215,6 +238,7 @@ function renderPanel(cam) {
           _hlsInstance.loadSource(videoUrl);
           _hlsInstance.attachMedia(videoEl);
           _hlsInstance.on(Hls.Events.ERROR, (_evt, data) => {
+            console.warn(`[CCTV] HLS error (${cam.i}):`, data);
             if (data.fatal) showVideoError();
           });
         } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {

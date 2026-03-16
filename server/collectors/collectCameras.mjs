@@ -417,24 +417,27 @@ async function enrichWithSunders(cameras) {
 /** Fetch sunders-only cameras (not in trafficvision feeds) and add as new sources */
 async function fetchSundersOnlyCameras() {
   const SUNDERS_API = 'https://sunders.uber.space/camera.php';
-  const GRID_SIZE = 10;  // Same grid as enrichment for consistency
   let sundersOnlyCount = 0;
 
   try {
     console.log(`\n  Fetching sunders-only cameras (Flock Safety + OSM surveillance)...`);
     
-    // Define regions to query (covers most populated areas)
+    // Query a few major regions with known surveillance data
+    // Note: sunders.uber.space returns ALL nodes in bbox, filtering happens client-side
     const regions = [
-      { minLat: 24, maxLat: 50, minLng: -130, maxLng: -60 },  // USA
-      { minLat: 41, maxLat: 51, minLng: -10, maxLng: 40 },    // Europe
-      { minLat: 35, maxLat: 55, minLng: 100, maxLng: 150 },   // East Asia
-      { minLat: -45, maxLat: -10, minLng: 110, maxLng: 160 }, // Australia
+      { name: 'USA Northeast', minLat: 40, maxLat: 45, minLng: -74, maxLng: -71 },      // NYC area
+      { name: 'USA California', minLat: 37, maxLat: 38, minLng: -122, maxLng: -120 },   // Bay Area
+      { name: 'USA Texas', minLat: 29, maxLat: 33, minLng: -98, maxLng: -94 },          // Houston/DFW
+      { name: 'UK London', minLat: 51.3, maxLat: 51.7, minLng: -0.5, maxLng: 0.2 },     // London
+      { name: 'Germany Berlin', minLat: 52.3, maxLat: 52.7, minLng: 13.1, maxLng: 13.8 }, // Berlin
     ];
     
     const newCameras = [];
     let totalFetched = 0;
+    let regionCount = 0;
     
     for (const region of regions) {
+      regionCount++;
       const params = new URLSearchParams({
         bbox: `${region.minLng},${region.minLat},${region.maxLng},${region.maxLat}`,
         format: 'json',
@@ -446,22 +449,34 @@ async function fetchSundersOnlyCameras() {
           signal: AbortSignal.timeout(30_000),
           headers: { 'User-Agent': 'ShadowGrid-Collector/1.0' },
         });
-        if (!res.ok) continue;
+        if (!res.ok) {
+          console.log(`      ${region.name}: HTTP ${res.status}`);
+          continue;
+        }
         
         const sunders = await res.json();
-        if (!Array.isArray(sunders)) continue;
+        if (!Array.isArray(sunders)) {
+          console.log(`      ${region.name}: Unexpected format`);
+          continue;
+        }
         
         totalFetched += sunders.length;
+        console.log(`      ${region.name}: ${sunders.length} nodes fetched`);
         
-        // Filter for surveillance cameras
+        // Filter for surveillance cameras - be lenient with filtering
         for (const sun of sunders) {
-          const tags = sun.tags || {};
+          if (!sun.tags) continue;
+          const tags = sun.tags;
           
-          // Include: man_made=surveillance OR manufacturer=Flock Safety
+          // Include if: 
+          // - has man_made=surveillance tag, OR
+          // - manufacturer contains "Flock", OR  
+          // - camera:type exists (any camera tag suggests surveillance)
           const isSurveillance = tags.man_made === 'surveillance';
-          const isFlockSafety = tags.manufacturer?.toLowerCase().includes('flock');
+          const isFlockSafety = tags.manufacturer?.toLowerCase?.().includes('flock');
+          const hasCamera = tags.camera_type || tags['camera:type'];
           
-          if (isSurveillance || isFlockSafety) {
+          if (isSurveillance || isFlockSafety || hasCamera) {
             // Convert to our schema
             const cam = {
               id: `sunders-${sun.id}`,
@@ -476,9 +491,9 @@ async function fetchSundersOnlyCameras() {
               state: '',
               city: '',
               // Store OSM tags directly
-              sundersType: tags.camera_type || null,
+              sundersType: tags.camera_type || tags['camera:type'] || null,
               sundersOperator: tags.operator || null,
-              sundersDirection: tags.camera_direction ? parseFloat(tags.camera_direction) : null,
+              sundersDirection: tags.camera_direction || tags['camera:direction'] ? parseFloat(tags.camera_direction || tags['camera:direction']) : null,
               sundersHeight: tags.height ? parseFloat(tags.height) : null,
               sundersManufacturer: tags.manufacturer || null,
             };
@@ -491,11 +506,14 @@ async function fetchSundersOnlyCameras() {
           }
         }
       } catch (err) {
-        console.warn(`    Region [${region.minLat},${region.maxLat}]×[${region.minLng},${region.maxLng}]: ${err.message}`);
+        console.log(`      ${region.name}: ${err.message}`);
       }
+      
+      // Rate limit to avoid overwhelming the API
+      await new Promise(r => setTimeout(r, 500));
     }
     
-    console.log(`    Fetched ${totalFetched} sunders nodes, ${sundersOnlyCount} qualify as surveillance cameras`);
+    console.log(`    Total fetched: ${totalFetched}, Qualified: ${sundersOnlyCount} surveillance cameras`);
     return newCameras;
   } catch (err) {
     console.warn(`    Sunders-only fetch failed (optional): ${err.message}`);
