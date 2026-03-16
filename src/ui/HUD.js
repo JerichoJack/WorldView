@@ -8,7 +8,7 @@
 import * as Cesium from 'cesium';
 import { followEntity, stopFollow, isFollowing, followingLabel } from '../core/follow.js';
 import { setFollowMode, setFlightGlow, hasAssetModel, setEnrichedTypecode } from '../layers/flights.js';
-import { clearSatelliteSelection, setSatelliteSelection } from '../layers/satellites.js';
+import { clearSatelliteSelection, setSatelliteInfoPanelVisible, setSatelliteSelection } from '../layers/satellites.js';
 import { CITIES, flyTo } from '../core/camera.js';
 
 const DEV_MODE = ((import.meta.env.VITE_DEVELOPER_MODE ?? import.meta.env.VITE_DEV_MODE ?? 'false').toLowerCase() === 'true');
@@ -858,6 +858,7 @@ function initEntityPicker(viewer) {
       }
 
       setSatelliteSelection(primaryEntity, true);
+      setSatelliteInfoPanelVisible(true);
 
       const satellites = satelliteEntities.map(getSatellitePanelData);
       panel.style.display = 'block';
@@ -914,6 +915,7 @@ function initEntityPicker(viewer) {
 
     } else if (type === 'satellite') {
       setSatelliteSelection(entity, true);
+      setSatelliteInfoPanelVisible(true);
       const { name, provider, isMilitary, orbitType, application, crewedStatus } = getSatellitePanelData(entity);
       panel.style.display = 'block';
       panel.innerHTML = satelliteHtml({ name, provider, isMilitary, orbitType, application, crewedStatus });

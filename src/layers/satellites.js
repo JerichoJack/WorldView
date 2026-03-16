@@ -128,6 +128,7 @@ const satMap  = new Map();
 let enabled   = false;  // Start disabled by default
 let lastSatelliteStatusKey = '';
 let selectedSatelliteKey = null;
+let satelliteInfoPanelVisible = false;
 
 const DEFAULT_CLASSIFICATION_ENABLED = !SERVER_HEAVY_MODE;
 
@@ -199,6 +200,10 @@ function isSatelliteSelected(key) {
   return key != null && key === selectedSatelliteKey;
 }
 
+function shouldShowSatelliteOverlay(record) {
+  return satelliteInfoPanelVisible && shouldShowSatellite(record.meta) && isSatelliteSelected(record.key);
+}
+
 function getSatelliteBaseColor(meta) {
   const key = classificationKeyForMeta(meta);
   return Cesium.Color.fromCssColorString(SATELLITE_COLOR_MAP[key] ?? SATELLITE_COLOR_MAP.other);
@@ -233,8 +238,8 @@ function getGroundSubpoint(positionCartesian, result) {
 function createSatelliteTrackEntity(viewer, record, positions) {
   if (!record.satrec) return null;
   return viewer.entities.add({
-    show: new Cesium.CallbackProperty(() => shouldShowSatellite(record.meta) && isSatelliteSelected(record.key), false),
     polyline: {
+      show: new Cesium.CallbackProperty(() => shouldShowSatelliteOverlay(record), false),
       positions,
       width: 2,
       material: new Cesium.PolylineDashMaterialProperty({
@@ -258,9 +263,9 @@ function createSatelliteFootprintEntity(viewer, record) {
   }, false);
 
   return viewer.entities.add({
-    show: new Cesium.CallbackProperty(() => shouldShowSatellite(record.meta) && isSatelliteSelected(record.key), false),
     position,
     ellipse: {
+      show: new Cesium.CallbackProperty(() => shouldShowSatelliteOverlay(record), false),
       semiMajorAxis: radius,
       semiMinorAxis: radius,
       material: new Cesium.ColorMaterialProperty(
@@ -287,6 +292,11 @@ export function setSatelliteSelection(entityOrKey, active = true) {
 
 export function clearSatelliteSelection() {
   selectedSatelliteKey = null;
+  satelliteInfoPanelVisible = false;
+}
+
+export function setSatelliteInfoPanelVisible(visible) {
+  satelliteInfoPanelVisible = !!visible;
 }
 
 function getEnabledSatelliteCategories() {

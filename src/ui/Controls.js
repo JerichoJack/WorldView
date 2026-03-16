@@ -4,6 +4,8 @@
  * Last updated: 2026-03-13
  */
 
+import { clearSatelliteSelection } from '../layers/satellites.js';
+
 let currentMode = 'normal';
 const SERVER_HEAVY_MODE = ((import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true');
 
@@ -150,6 +152,7 @@ export function initControls(viewer, layers) {
         layer?.setFlightZoneFilter?.(filterType, isActive);
       } else {
         // Satellites classification filter
+        clearSatelliteSelection();
         layer?.setClassificationFilter?.(filterType, isActive);
       }
     });
