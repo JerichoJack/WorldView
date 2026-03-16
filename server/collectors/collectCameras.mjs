@@ -8,12 +8,15 @@
  *   public/camera-data/cameras-globe.json — minimal [lat,lng,typeIdx] tuples for globe coverage
  *   public/camera-data/meta.json          — source stats + timestamp
  *
- * Default mode pulls OpenStreetMap surveillance objects directly from Overpass,
- * with manufacturer filtering (default: "Flock Safety").
+ * Modes:
+ *   osm (default) — OpenStreetMap surveillance objects via Overpass, manufacturer filtered
+ *   trafficvision — Legacy feed mode from trafficvision.live sources
+ *   both — Fetch both trafficvision feeds and OSM objects, deduplicated
  *
  * Usage:
  *   node server/collectors/collectCameras.mjs
  *   node server/collectors/collectCameras.mjs --mode=trafficvision --sources=wsdot,511ny
+ *   node server/collectors/collectCameras.mjs --mode=both
  *   node server/collectors/collectCameras.mjs --osm-manufacturer="Flock Safety"
  */
 
@@ -470,6 +473,16 @@ async function main() {
     results = await pool(tasks, CONCURRENCY);
     allCameras = results.flatMap(r => r.cameras);
     console.log(`\n  Total cameras: ${allCameras.length}`);
+  } else if (MODE === 'both') {
+    console.log(`\n  Fetching trafficvision feeds...`);
+    const tvTasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
+    results = await pool(tvTasks, CONCURRENCY);
+    const tvCameras = results.flatMap(r => r.cameras);
+    console.log(`  Trafficvision cameras: ${tvCameras.length}`);
+    
+    const osmCameras = await fetchOsmSurveillanceCameras();
+    allCameras = [...tvCameras, ...osmCameras];
+    console.log(`\n  Combined (before dedup): ${allCameras.length}`);
   } else {
     allCameras = await fetchOsmSurveillanceCameras();
     console.log(`\n  Total OSM surveillance cameras: ${allCameras.length}`);
@@ -581,17 +594,18 @@ async function main() {
     generated:    new Date().toISOString(),
     mode: MODE,
     totalCameras: unique.length,
-    sources: MODE === 'trafficvision'
+    sources: (MODE === 'trafficvision' || MODE === 'both')
       ? results.map(({ source, name, count, error }) => ({
           source, name, count, ...(error ? { error } : {}),
         }))
+          .concat(MODE === 'both' ? [{ source: 'osm', name: 'OpenStreetMap Overpass' }] : [])
       : [{ source: 'osm', name: 'OpenStreetMap Overpass', count: unique.length }],
   };
   const metaPath = path.join(OUT_DIR, 'meta.json');
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   console.log(`  → ${metaPath}`);
 
-  if (MODE === 'trafficvision') {
+  if (MODE === 'trafficvision' || MODE === 'both') {
     const failed = results.filter(r => r.error);
     if (failed.length) {
       console.log(`\n  ⚠  ${failed.length} sources failed:`);

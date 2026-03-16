@@ -226,12 +226,15 @@ Then generate camera database and tiles (for CCTV layer):
 node server/collectors/collectCameras.mjs
 ```
 
-By default this now pulls OSM `man_made=surveillance` objects via Overpass and keeps entries matching `manufacturer=Flock Safety`.
+By default this pulls OSM `man_made=surveillance` objects via Overpass and keeps entries matching `manufacturer=Flock Safety`.
 
-Use legacy trafficvision feed mode when needed:
+Other modes:
 
 ```bash
-node server/collectors/collectCameras.mjs --mode=trafficvision
+node server/collectors/collectCameras.mjs --mode=trafficvision          # Legacy feed mode
+node server/collectors/collectCameras.mjs --mode=both                   # Both trafficvision + OSM (deduplicated)
+node server/collectors/collectCameras.mjs --osm-manufacturer="Axis"     # Custom manufacturer filter
+node server/collectors/collectCameras.mjs --osm-all=true                # All OSM surveillance (no filter)
 ```
 
 ### Run locally
