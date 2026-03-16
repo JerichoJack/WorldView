@@ -434,7 +434,6 @@ function drawReticle(viewer) {
     </div>
   `;
   document.body.appendChild(zoomPanel);
-  wireCameraControlButtons(viewer);
 
   // ── Bottom-centre: SYSTEM STATUS ──────────────────────────────────────────
   const statusPanel = document.createElement('div');
@@ -638,6 +637,8 @@ function drawReticle(viewer) {
   window.addEventListener('resize', positionLayersDock);
   positionImageryDock();
   window.addEventListener('resize', positionImageryDock);
+
+  wireCameraControlButtons(viewer);
 
   // ── Canvas render (reticle + corner brackets) ─────────────────────────────
   function renderCanvas() {
