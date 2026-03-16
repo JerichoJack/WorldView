@@ -164,6 +164,14 @@ function getOsmPalette(cam) {
   return { fill: '#b86d10', stroke: '#ffd19a', glow: '#ffc36f', label: 'SURVEILLANCE' };
 }
 
+/** Return a fill/stroke palette for any camera — OSM uses scope-based colors; feed cameras use feed-type colors. */
+function getFovPalette(cam) {
+  if (isOsmOnlyCamera(cam)) return getOsmPalette(cam);
+  const fill   = cam.t === 'v' ? '#00aaff' : cam.t === 'h' ? '#cc88ff' : '#00ff88';
+  const stroke = cam.t === 'v' ? '#0088cc' : cam.t === 'h' ? '#aa66ee' : '#00cc66';
+  return { fill, stroke };
+}
+
 function getOsmGlyph(kind) {
   switch (kind) {
     case 'fixed':
@@ -344,7 +352,7 @@ function flyBackToPreviousView() {
 }
 
 function shouldRenderOsmFov(cam) {
-  if (!_enabled || !_viewer || !isOsmOnlyCamera(cam)) return false;
+  if (!_enabled || !_viewer) return false;
   if (_viewer.camera.positionCartographic.height > OSM_FOV_MAX_ALT_M) return false;
   const kind = normalizeOsmKind(cam);
   if (kind === 'guard') return false;
@@ -392,11 +400,12 @@ function buildSectorPositions(cam, rangeM, spreadDeg) {
 
 function renderSelectionOverlay(cam) {
   clearSelectionOverlay();
-  if (!isOsmOnlyCamera(cam) || !_ds) return;
+  if (!_ds) return;
   const kind = normalizeOsmKind(cam);
   if (kind === 'guard') return;
+  if (kind !== 'dome' && kind !== 'alpr' && !Number.isFinite(Number(cam.d))) return;
 
-  const palette = getOsmPalette(cam);
+  const palette = getFovPalette(cam);
   const fillColor = Cesium.Color.fromCssColorString(palette.fill).withAlpha(0.18);
   const edgeColor = Cesium.Color.fromCssColorString(palette.stroke).withAlpha(0.78);
   const rangeM = estimateFovRangeMeters(cam);
@@ -448,11 +457,12 @@ function renderSelectionOverlay(cam) {
 }
 
 function createPersistentFovEntities(cam) {
-  if (!isOsmOnlyCamera(cam) || !_ds) return [];
+  if (!_ds) return [];
   const kind = normalizeOsmKind(cam);
   if (kind === 'guard') return [];
+  if (kind !== 'dome' && kind !== 'alpr' && !Number.isFinite(Number(cam.d))) return [];
 
-  const palette = getOsmPalette(cam);
+  const palette = getFovPalette(cam);
   const fillColor = Cesium.Color.fromCssColorString(palette.fill).withAlpha(0.09);
   const edgeColor = Cesium.Color.fromCssColorString(palette.stroke).withAlpha(0.42);
   const rangeM = estimateFovRangeMeters(cam);
@@ -629,12 +639,10 @@ function renderPanel(cam) {
         <div style="color:rgba(0,255,136,0.45);font-size:9px;margin-bottom:8px;letter-spacing:0.05em">
           ${cam.a.toFixed(5)}° · ${cam.o.toFixed(5)}°
         </div>
-        ${isAlprOsm ? `
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-            <button id="cctv-alpr-goto" style="flex:1;background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.35);color:rgba(200,255,220,0.95);cursor:pointer;font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase">Go to FOV</button>
-            <button id="cctv-alpr-back" style="flex:1;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.25);color:rgba(255,255,255,0.75);cursor:${_alprReturnView ? 'pointer' : 'not-allowed'};opacity:${_alprReturnView ? '1' : '0.5'};font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase" ${_alprReturnView ? '' : 'disabled'}>Back</button>
-          </div>
-        ` : ''}
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <button id="cctv-goto-fov" style="flex:1;background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.35);color:rgba(200,255,220,0.95);cursor:pointer;font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase">Go to FOV</button>
+          <button id="cctv-back-fov" style="flex:1;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.25);color:rgba(255,255,255,0.75);cursor:${_alprReturnView ? 'pointer' : 'not-allowed'};opacity:${_alprReturnView ? '1' : '0.5'};font-size:9px;padding:4px 7px;font-family:inherit;letter-spacing:0.06em;text-transform:uppercase" ${_alprReturnView ? '' : 'disabled'}>Back</button>
+        </div>
         ${needsServerTranscode ? `
           <div id="cctv-transcode-note" style="margin-bottom:8px;padding:6px 8px;border:1px solid rgba(255,193,7,0.35);background:rgba(255,193,7,0.08);color:rgba(255,220,120,0.92);font-size:9px;line-height:1.4">
             Checking server transcoder status...
@@ -685,17 +693,15 @@ function renderPanel(cam) {
       _panel.style.display = 'none';
     });
 
-    if (isAlprOsm) {
-      document.getElementById('cctv-alpr-goto')?.addEventListener('click', () => {
-        if (!_alprReturnView) _alprReturnView = captureCurrentView();
-        flyToOsmCameraFov(cam);
-        renderPanel(cam);
-      });
-      document.getElementById('cctv-alpr-back')?.addEventListener('click', () => {
-        flyBackToPreviousView();
-        renderPanel(cam);
-      });
-    }
+    document.getElementById('cctv-goto-fov')?.addEventListener('click', () => {
+      if (!_alprReturnView) _alprReturnView = captureCurrentView();
+      flyToOsmCameraFov(cam);
+      renderPanel(cam);
+    });
+    document.getElementById('cctv-back-fov')?.addEventListener('click', () => {
+      flyBackToPreviousView();
+      renderPanel(cam);
+    });
 
     if (hasPlayableVideo) {
       const videoEl = document.getElementById('cctv-video');
