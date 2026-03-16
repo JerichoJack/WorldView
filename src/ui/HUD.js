@@ -729,8 +729,21 @@ function wireCameraControlButtons(viewer) {
     btn.style.color = active ? '#00ff88' : 'rgba(0,255,136,0.78)';
   };
 
+  const paintLabelsToggle = (btn, labelsOn) => {
+    if (labelsOn) {
+      btn.style.background = 'rgba(0,255,136,0.18)';
+      btn.style.borderColor = 'rgba(0,255,136,0.58)';
+      btn.style.color = '#00ff88';
+      return;
+    }
+    btn.style.background = 'rgba(255,68,68,0.14)';
+    btn.style.borderColor = 'rgba(255,68,68,0.58)';
+    btn.style.color = '#ff7070';
+  };
+
   const syncState = () => {
-    paintToggle(orbitalBtn, isOrbitalModeEnabled(viewer));
+    const labelsOn = !isOrbitalModeEnabled(viewer);
+    paintLabelsToggle(orbitalBtn, labelsOn);
     paintToggle(rotateBtn, isAutoRotateEnabled(viewer));
   };
 
@@ -747,8 +760,10 @@ function wireCameraControlButtons(viewer) {
   });
 
   orbitalBtn.addEventListener('click', () => {
-    const next = !isOrbitalModeEnabled(viewer);
-    setOrbitalMode(viewer, next);
+    const labelsOn = !isOrbitalModeEnabled(viewer);
+    const nextLabelsOn = !labelsOn;
+    // Labels are suppressed when orbital mode is enabled.
+    setOrbitalMode(viewer, !nextLabelsOn);
     syncState();
   });
 
