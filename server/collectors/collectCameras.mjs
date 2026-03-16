@@ -40,16 +40,14 @@ const BASE_URL  = 'https://trafficvision.live/camera-data';
 
 // ─── Surveillance under Surveillance (Sunders) enrichment config ──────────────
 const SUNDERS_BASE = 'https://sunders.uber.space';
-// Candidate bbox API endpoints tried in order (first 200 OK response wins).
-// Their map viewer issues bbox queries; the JSON API mirrors the same geometry.
-const SUNDERS_BBOX_ENDPOINTS = [
-  (w, s, e, n) => `${SUNDERS_BASE}/map/data?bbox=${w},${s},${e},${n}`,
-  (w, s, e, n) => `${SUNDERS_BASE}/api/cameras?bbox=${w},${s},${e},${n}`,
-  (w, s, e, n) => `${SUNDERS_BASE}/cameras.geojson?bbox=${w},${s},${e},${n}`,
-  (w, s, e, n) => `${SUNDERS_BASE}/?view=cameras&format=json&bbox=${s},${w},${n},${e}`,
-];
+// Real endpoint discovered from leafletembed_functions.js:
+//   camera.php?bbox=W,S,E,N&zoom=Z&width=PX&height=PX
+// zoom=17 with a generous viewport discourages cluster (multi=yes) entries.
+const SUNDERS_ZOOM  = 17;
+const SUNDERS_PX    = 4096; // virtual viewport pixels — higher = less clustering
 // Bucket size (degrees) used when tiling TrafficVision camera positions for Sunders queries.
-const SUNDERS_TILE_DEG = 1;
+// 0.1° ≈ 11 km — small enough that zoom=17 + 4096px avoids almost all clustering.
+const SUNDERS_TILE_DEG = 0.1;
 
 // ─── Source manifest (extracted from trafficvision.live main bundle) ──────────
 const SOURCES = [
@@ -517,76 +515,63 @@ function haversineM(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Fetch raw Sunders camera features for a bounding box.
- * Tries multiple endpoint patterns until one returns a parseable response.
- * Returns an array of GeoJSON Feature objects or lightweight plain objects.
+ * Fetch raw Sunders camera records for a bounding box using camera.php.
+ * Returns an array of plain camera objects, or null if the endpoint is unreachable.
+ * Cluster entries (multi=="yes") are filtered out — they carry no FOV data.
  */
 async function fetchSundersForBbox(west, south, east, north) {
-  for (const buildUrl of SUNDERS_BBOX_ENDPOINTS) {
-    const url = buildUrl(west, south, east, north);
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'ShadowGrid-Collector/1.0', 'Accept': 'application/json,text/plain,*/*' },
-        signal: AbortSignal.timeout(25_000),
-      });
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (text.trim().startsWith('<')) continue; // HTML error page
-      let data;
-      try { data = JSON.parse(text); } catch { continue; }
-      // GeoJSON FeatureCollection
-      if (data?.type === 'FeatureCollection' && Array.isArray(data.features)) return data.features;
-      // Plain array
-      if (Array.isArray(data)) return data;
-      // Overpass-style { elements: [] }
-      if (Array.isArray(data?.elements)) return data.elements;
-    } catch { /* next endpoint */ }
+  const url = `${SUNDERS_BASE}/camera.php?bbox=${west},${south},${east},${north}&zoom=${SUNDERS_ZOOM}&width=${SUNDERS_PX}&height=${SUNDERS_PX}`;
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'ShadowGrid-Collector/1.0', 'Accept': 'application/json,*/*' },
+      signal: AbortSignal.timeout(25_000),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!text || text.trim().startsWith('<')) return null; // HTML error page
+    let data;
+    try { data = JSON.parse(text); } catch { return null; }
+    if (!Array.isArray(data)) return null;
+    // Filter out cluster summary entries
+    return data.filter(r => r.multi !== 'yes');
+  } catch {
+    return null;
   }
-  return null; // all endpoints failed
 }
 
 /**
- * Normalise a raw Sunders feature (GeoJSON Feature or plain object) into
- * a flat record with lat, lng, and FOV fields.
+ * Normalise a raw Sunders camera.php record (flat JSON object) into
+ * a plain struct with lat, lng, and FOV fields.
+ * Response schema: { lat, lon, id, "camera:type", direction, height,
+ *   "camera:angle", surveillance, "surveillance:type", "surveillance:zone",
+ *   operator, "camera:mount", ... }
  */
-function normaliseSundersFeature(feat) {
-  let lat, lng, tags;
-  // GeoJSON Point Feature
-  if (feat?.geometry?.type === 'Point' && Array.isArray(feat.geometry.coordinates)) {
-    [lng, lat] = feat.geometry.coordinates;
-    tags = feat.properties ?? {};
-  } else if (feat?.lat != null && feat?.lon != null) {
-    // Overpass element
-    lat = Number(feat.lat ?? feat.center?.lat);
-    lng = Number(feat.lon ?? feat.center?.lon);
-    tags = feat.tags ?? {};
-  } else if (feat?.latitude != null && feat?.longitude != null) {
-    lat = Number(feat.latitude);
-    lng = Number(feat.longitude);
-    tags = feat;
-  } else {
-    return null;
-  }
+function normaliseSundersFeature(rec) {
+  const lat = Number(rec?.lat);
+  const lng = Number(rec?.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-  const direction = parseDirection(
-    tags['camera:direction'] ?? tags['direction'] ?? tags.direction ?? null,
-  );
-  const height = parseNumber(tags['height'] ?? tags.height ?? null);
-  const angle  = parseNumber(tags['camera:angle'] ?? tags.camera_angle ?? null);
+  // direction field may contain multiple values separated by ';' (e.g. "300;200")
+  // Use the first numeric value.
+  const rawDir = rec['camera:direction'] ?? rec['direction'] ?? null;
+  const dirStr = rawDir != null ? String(rawDir).split(';')[0].trim() : null;
+  const direction = parseDirection(dirStr);
+
+  const height = parseNumber(rec['height'] ?? null);
+  const angle  = parseNumber(rec['camera:angle'] ?? null);
 
   return {
     lat,
     lng,
-    direction:         Number.isFinite(direction) ? direction : null,
-    cameraType:        tags['camera:type']          || tags.camera_type    || null,
-    height:            Number.isFinite(height) ? height : null,
-    cameraAngle:       Number.isFinite(angle) ? angle : null,
-    surveillance:      tags['surveillance']          || null,   // public/outdoor/indoor/private
-    surveillanceType:  tags['surveillance:type']     || null,   // alpr/traffic/camera/guard
-    surveillanceZone:  tags['surveillance:zone']     || null,
-    operator:          tags['operator']              || null,
-    mount:             tags['camera:mount']          || null,
+    direction:        Number.isFinite(direction) ? direction : null,
+    cameraType:       rec['camera:type']       || null,
+    height:           Number.isFinite(height) ? height : null,
+    cameraAngle:      Number.isFinite(angle) ? angle : null,
+    surveillance:     rec['surveillance']      || null,
+    surveillanceType: rec['surveillance:type'] || null,
+    surveillanceZone: rec['surveillance:zone'] || null,
+    operator:         rec['operator']          || null,
+    mount:            rec['camera:mount']      || null,
   };
 }
 
