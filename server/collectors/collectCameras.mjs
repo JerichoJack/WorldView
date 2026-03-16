@@ -318,7 +318,15 @@ function buildOverpassQuery(region, timeoutSec) {
   return `[out:json][timeout:${timeoutSec}];(node["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});way["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});relation["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng}););out center tags;`;
 }
 
-async function fetchOverpassRegion(region, endpoints, timeoutMs, endpointRetries) {
+function endpointName(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+async function fetchOverpassRegion(region, endpoints, timeoutMs, endpointRetries, onAttempt = null) {
   const timeoutSec = Math.max(30, Math.ceil(timeoutMs / 1000));
   const q = buildOverpassQuery(region, timeoutSec);
   let lastError = null;
@@ -326,6 +334,7 @@ async function fetchOverpassRegion(region, endpoints, timeoutMs, endpointRetries
   for (const endpoint of endpoints) {
     for (let attempt = 1; attempt <= endpointRetries; attempt++) {
       try {
+        if (onAttempt) onAttempt({ endpoint, attempt, endpointRetries });
         const body = new URLSearchParams({ data: q });
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -457,15 +466,25 @@ async function fetchOsmSurveillanceCameras() {
       const region = queue.shift();
       let data = null;
       let lastError = null;
+      console.log(`      ${region.label}: querying depth=${region.depth} bbox=${region.minLat},${region.minLng},${region.maxLat},${region.maxLng}`);
 
       try {
-        data = await fetchOverpassRegion(region, OVERPASS_ENDPOINTS, OSM_TIMEOUT_MS, OSM_ENDPOINT_RETRIES);
+        data = await fetchOverpassRegion(
+          region,
+          OVERPASS_ENDPOINTS,
+          OSM_TIMEOUT_MS,
+          OSM_ENDPOINT_RETRIES,
+          ({ endpoint, attempt, endpointRetries }) => {
+            console.log(`        ${region.label}: attempt ${attempt}/${endpointRetries} via ${endpointName(endpoint)}`);
+          },
+        );
       } catch (err) {
         lastError = err;
       }
 
       if (!data || !Array.isArray(data.elements)) {
         if (isTimeoutError(lastError) && region.depth < OSM_MAX_SPLIT_DEPTH) {
+          console.log(`        ${region.label}: timeout, splitting into 4 sub-regions`);
           const parts = splitRegionBox(region).map((part, idx) => ({
             ...part,
             depth: region.depth + 1,
@@ -477,7 +496,7 @@ async function fetchOsmSurveillanceCameras() {
         }
 
         regionFailedCount += 1;
-        console.log(`      ${region.label}: ${lastError?.message || 'No Overpass response'}`);
+        console.log(`        ${region.label}: failed - ${lastError?.message || 'No Overpass response'}`);
         continue;
       }
 
