@@ -868,9 +868,16 @@ function wireCameraControlButtons(viewer) {
   function positionSatelliteModal() {
     if (!imageryDropdownBtn || !satelliteModal) return;
     const buttonRect = imageryDropdownBtn.getBoundingClientRect();
-    const modalWidth = Math.min(700, window.innerWidth - 24);
+    const modalRect = satelliteModal.getBoundingClientRect();
+    const modalWidth = Math.min(700, Math.max(modalRect.width, 320), window.innerWidth - 24);
+    const modalHeight = Math.min(modalRect.height || 0, window.innerHeight - 24);
     const left = Math.max(12, Math.min(buttonRect.left, window.innerWidth - modalWidth - 12));
-    const top = Math.max(12, Math.min(buttonRect.bottom + 8, window.innerHeight - 24));
+    const belowTop = buttonRect.bottom + 8;
+    const aboveTop = buttonRect.top - modalHeight - 8;
+    const fitsBelow = belowTop + modalHeight <= window.innerHeight - 12;
+    const top = fitsBelow
+      ? belowTop
+      : Math.max(12, Math.min(aboveTop, window.innerHeight - modalHeight - 12));
     satelliteModal.style.left = `${left}px`;
     satelliteModal.style.top = `${top}px`;
   }
