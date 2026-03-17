@@ -1191,12 +1191,6 @@ function wireCameraControlButtons(viewer) {
       },
     },
   ];
-  const SATELLITE_BAND_PRESETS = [
-    { key: 'true', label: 'True Colour' },
-    { key: 'false', label: 'False Colour' },
-    { key: 'swir', label: 'SWIR' },
-    { key: 'agriculture', label: 'Agriculture' },
-  ];
   const todayIsoDate = new Date().toISOString().slice(0, 10);
 
   const zoomInBtn = document.getElementById('hud-cam-zoom-in');
@@ -1281,17 +1275,163 @@ function wireCameraControlButtons(viewer) {
     document.body.style.cursor = active ? 'crosshair' : '';
   }
 
+  function ensureSatelliteDateIconStyle() {
+    if (document.getElementById('satellite-date-input-icon-style')) return;
+    const style = document.createElement('style');
+    style.id = 'satellite-date-input-icon-style';
+    style.textContent = `
+      #satellite-date-input::-webkit-calendar-picker-indicator {
+        opacity: 1;
+        cursor: pointer;
+        filter: invert(35%) sepia(98%) saturate(1512%) hue-rotate(191deg) brightness(103%) contrast(103%);
+      }
+      #satellite-date-input::-webkit-calendar-picker-indicator:hover {
+        filter: invert(37%) sepia(99%) saturate(1700%) hue-rotate(191deg) brightness(109%) contrast(108%);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   function getSelectedCollectionPreset() {
     if (!satelliteCollectionInput) return null;
     return SATELLITE_COLLECTION_PRESETS.find(item => item.key === satelliteCollectionInput.value) ?? SATELLITE_COLLECTION_PRESETS[0] ?? null;
   }
 
-  function applyCollectionPreset() {
-    if (!satelliteCollectionInput || !satelliteBandsInput) return;
+  function getBandOptionsForCollection(selected) {
+    if (!selected) return [];
+
+    const mk = (key, label, expr) => ({ key, label, expr });
+    switch (selected.key) {
+      case 's1-sar':
+        return [
+          mk('vv', 'VV', 'VV'),
+          mk('vh', 'VH', 'VH'),
+          mk('vv-vh', 'VV/VH Composite', 'VV,VH'),
+        ];
+      case 's3-olci':
+        return [
+          mk('true', 'True Colour', selected.bands.true),
+          mk('false', 'False Colour', selected.bands.false),
+          mk('ocean', 'Ocean Colour', 'Oa08_radiance,Oa06_radiance,Oa04_radiance'),
+        ];
+      case 's5p-no2':
+        return [mk('no2', 'NO2 Column', selected.bands.true)];
+      case 's5p-co':
+        return [mk('co', 'CO Column', selected.bands.true)];
+      case 's5p-so2':
+        return [mk('so2', 'SO2 Column', selected.bands.true)];
+      case 's5p-ch4':
+        return [mk('ch4', 'CH4 XCH4', selected.bands.true)];
+      case 's5p-aai':
+        return [mk('aai', 'Aerosol Index', selected.bands.true)];
+      case 'l9-sr':
+      case 'l8-sr':
+      case 'l7-sr':
+      case 'l5-sr':
+      case 'l9-toa':
+      case 'l8-toa':
+        return [
+          mk('true', 'True Colour', selected.bands.true),
+          mk('false', 'False Colour', selected.bands.false),
+          mk('swir', 'SWIR', selected.bands.swir),
+        ];
+      case 'modis-terra-500':
+      case 'modis-aqua-500':
+      case 'modis-brdf':
+        return [
+          mk('true', 'True Colour', selected.bands.true),
+          mk('false', 'False Colour', selected.bands.false),
+        ];
+      case 'modis-terra-250':
+        return [mk('false', 'False Colour', selected.bands.false)];
+      case 'modis-vi':
+        return [
+          mk('ndvi', 'NDVI', selected.bands.true),
+          mk('evi', 'EVI', selected.bands.false),
+        ];
+      case 'modis-lst':
+        return [
+          mk('day', 'Daytime Land Surface Temperature', selected.bands.true),
+          mk('night', 'Nighttime Land Surface Temperature', selected.bands.false),
+        ];
+      case 'modis-fire':
+        return [
+          mk('mask', 'Fire Mask', selected.bands.true),
+          mk('frp', 'Fire Radiative Power', selected.bands.false),
+        ];
+      case 'modis-snow':
+        return [mk('snow', 'Snow Cover', selected.bands.true)];
+      case 'night-slc':
+      case 'night-cf':
+        return [mk('rad', 'Radiance', selected.bands.true)];
+      case 'viirs-surf-refl':
+        return [
+          mk('true', 'True Colour', selected.bands.true),
+          mk('false', 'False Colour', selected.bands.false),
+          mk('swir', 'SWIR', selected.bands.swir),
+        ];
+      case 'viirs-vi':
+        return [
+          mk('ndvi', 'NDVI', selected.bands.true),
+          mk('evi2', 'EVI2', selected.bands.false),
+        ];
+      case 'goes-16':
+        return [
+          mk('visible', 'Visible', 'CMI_C02'),
+          mk('true', 'True Colour', selected.bands.true),
+          mk('wv', 'Water Vapor', 'CMI_C08'),
+          mk('ir', 'Longwave IR', 'CMI_C13'),
+        ];
+      case 'goes-17':
+      case 'goes-18':
+        return [
+          mk('visible', 'Visible', 'CMI_C02'),
+          mk('true', 'True Colour', selected.bands.true),
+          mk('ir', 'Longwave IR', 'CMI_C13'),
+        ];
+      case 'aster-l1t':
+        return [
+          mk('nir', 'NIR', 'B3N'),
+          mk('swir-geology', 'SWIR Geology', 'B04,B05,B06'),
+          mk('tir', 'Thermal IR', 'B10,B11,B12'),
+        ];
+      case 'aster-ged':
+        return [
+          mk('emis', 'Emissivity', 'emissivity_mean'),
+          mk('temp', 'Temperature', 'temperature'),
+        ];
+      default:
+        return [
+          mk('true', 'True Colour', selected.bands.true),
+          mk('false', 'False Colour', selected.bands.false),
+          mk('swir', 'SWIR', selected.bands.swir),
+          mk('agriculture', 'Agriculture', selected.bands.agriculture),
+        ];
+    }
+  }
+
+  function applyCollectionPreset(options = {}) {
+    if (!satelliteCollectionInput || !satelliteBandsInput || !satelliteBandPresetInput) return;
     const selected = getSelectedCollectionPreset();
     if (!selected) return;
-    const bandPresetKey = satelliteBandPresetInput?.value || 'true';
-    satelliteBandsInput.value = selected.bands[bandPresetKey] || selected.bands.true || 'B4,B3,B2';
+
+    const preserveBandKey = options.preserveBandKey
+      ?? satelliteBandPresetInput.selectedOptions?.[0]?.dataset?.bandKey
+      ?? '';
+    const bandOptions = getBandOptionsForCollection(selected);
+    satelliteBandPresetInput.innerHTML = bandOptions
+      .map(item => `<option value="${item.expr}" data-band-key="${item.key}">${item.label}</option>`)
+      .join('');
+
+    const wantedKey = options.bandKey ?? preserveBandKey;
+    const wantedOption = [...satelliteBandPresetInput.options].find(option => option.dataset.bandKey === wantedKey);
+    if (wantedOption) {
+      satelliteBandPresetInput.value = wantedOption.value;
+    } else if (satelliteBandPresetInput.options.length > 0) {
+      satelliteBandPresetInput.selectedIndex = 0;
+    }
+
+    satelliteBandsInput.value = satelliteBandPresetInput.value || selected.bands.true || 'B4,B3,B2';
   }
 
   function updateDateInputHighlight() {
@@ -1553,21 +1693,21 @@ function wireCameraControlButtons(viewer) {
       .join('');
   }
 
-  if (satelliteBandPresetInput) {
-    satelliteBandPresetInput.innerHTML = SATELLITE_BAND_PRESETS
-      .map(item => `<option value="${item.key}">${item.label}</option>`)
-      .join('');
-  }
-
   if (satelliteCollectionInput) {
-    satelliteCollectionInput.addEventListener('change', applyCollectionPreset);
+    satelliteCollectionInput.addEventListener('change', () => {
+      applyCollectionPreset();
+    });
   }
 
   if (satelliteBandPresetInput) {
-    satelliteBandPresetInput.addEventListener('change', applyCollectionPreset);
+    satelliteBandPresetInput.addEventListener('change', () => {
+      if (!satelliteBandsInput) return;
+      satelliteBandsInput.value = satelliteBandPresetInput.value || '';
+    });
   }
 
   if (satelliteDateInput) {
+    ensureSatelliteDateIconStyle();
     satelliteDateInput.max = todayIsoDate;
     if (!satelliteDateInput.value) satelliteDateInput.value = todayIsoDate;
     updateDateInputHighlight();
