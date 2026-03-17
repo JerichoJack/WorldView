@@ -550,8 +550,8 @@ function drawReticle(viewer) {
   imageryDock.innerHTML = `
     <button id="hud-imagery-dropdown" style="
       background: rgba(0,0,0,0.55);
-      border: 1px solid rgba(0,255,136,0.28);
-      color: rgba(0,255,136,0.8);
+      border: 1px solid rgba(255, 145, 0, 0.28); /* changed from rgba(0,255,136,0.28) to mark as incomplete */
+      color:  rgba(255, 145, 0, 0.28); /* changed from rgba(0,255,136,0.8) to mark as incomplete */
       font-family: 'Share Tech Mono', 'Courier New', monospace;
       font-size: 10px;
       letter-spacing: 0.1em;
