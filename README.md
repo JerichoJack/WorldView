@@ -8,9 +8,9 @@ All of it running in a browser tab. No classified clearances required.
 
 ## Screenshots
 
-![NVG Filter & 3D Flight Model Tracking](src\archive\Screenshot 2026-03-17 120111.png)
+![NVG Filter & 3D Flight Model Tracking](src/archive/Screenshot 2026-03-17 120111.png)
 
-![FLIR Filter & 3D Flight Model Tracking](src\archive\Screenshot 2026-03-17 120204.png)
+![FLIR Filter & 3D Flight Model Tracking](src/archive/Screenshot 2026-03-17 120204.png)
 
 ---
 
