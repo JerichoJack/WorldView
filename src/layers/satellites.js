@@ -123,23 +123,45 @@ const BUILTIN_TLE_FALLBACKS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-/** @type {Map<string, { satrec: object, entity: Cesium.Entity, trackEntity: Cesium.Entity, meta: object }>} */
+/** @type {Map<string, { key: string, satrec: object, entity: Cesium.Entity, trackEntity: Cesium.Entity | null, footprintEntity: Cesium.Entity | null, meta: object }>} */
 const satMap  = new Map();
 let enabled   = false;  // Start disabled by default
 let lastSatelliteStatusKey = '';
+let selectedSatelliteKey = null;
+let satelliteInfoPanelVisible = false;
 
 const DEFAULT_CLASSIFICATION_ENABLED = !SERVER_HEAVY_MODE;
 
 // Classification filter state — normal mode defaults to on, heavy mode defaults to off.
 const classificationFilters = {
-  military: DEFAULT_CLASSIFICATION_ENABLED,
-  crewed: DEFAULT_CLASSIFICATION_ENABLED,
-  communication: DEFAULT_CLASSIFICATION_ENABLED,
-  earthobservation: DEFAULT_CLASSIFICATION_ENABLED,
+  internet: DEFAULT_CLASSIFICATION_ENABLED,
+  communications: DEFAULT_CLASSIFICATION_ENABLED,
+  earth_observation: DEFAULT_CLASSIFICATION_ENABLED,
   navigation: DEFAULT_CLASSIFICATION_ENABLED,
-  astronomical: DEFAULT_CLASSIFICATION_ENABLED,
-  unknown: DEFAULT_CLASSIFICATION_ENABLED,
+  military: DEFAULT_CLASSIFICATION_ENABLED,
+  weather: DEFAULT_CLASSIFICATION_ENABLED,
+  scientific: DEFAULT_CLASSIFICATION_ENABLED,
+  rocket: DEFAULT_CLASSIFICATION_ENABLED,
+  debris: DEFAULT_CLASSIFICATION_ENABLED,
+  other: DEFAULT_CLASSIFICATION_ENABLED,
 };
+
+const EARTH_RADIUS_M = 6378137;
+const SATELLITE_COLOR_MAP = {
+  internet: '#4ade80',
+  communications: '#60a5fa',
+  earth_observation: '#22d3ee',
+  navigation: '#a78bfa',
+  military: '#f87171',
+  weather: '#f59e0b',
+  scientific: '#f472b6',
+  rocket: '#9ca3af',
+  debris: '#6b7280',
+  other: '#cbd5e1',
+};
+const SATELLITE_BASE_OUTLINE_COLOR = Cesium.Color.fromCssColorString('#003366');
+const SATELLITE_BASE_LABEL_COLOR = Cesium.Color.fromCssColorString('#00aaff');
+const SATELLITE_SELECTION_ACCENT = Cesium.Color.fromCssColorString('#ffe066');
 
 /**
  * Determine if a satellite entity should be visible based on enabled state and filters
@@ -148,18 +170,133 @@ function shouldShowSatellite(meta) {
   if (!enabled) return false;
 
   const filterKey = classificationKeyForMeta(meta);
-  return classificationFilters[filterKey] ?? classificationFilters.unknown;
+  return classificationFilters[filterKey] ?? classificationFilters.other;
 }
 
 function classificationKeyForMeta(meta = {}) {
-  if (meta.isMilitary) return 'military';
-  if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+  const rawName = String(meta.rawName ?? meta.name ?? '').toUpperCase();
   const app = (meta.application ?? 'Unknown').toLowerCase();
-  if (app === 'earth observation') return 'earthobservation';
-  if (app === 'communication') return 'communication';
+  const isCrewed = (meta.crewedStatus ?? '').toLowerCase() === 'crewed';
+
+  if (/\bDEB\b|DEBRIS|FRAGMENT/.test(rawName)) return 'debris';
+  if (/\bR\/B\b|ROCKET BODY|UPPER STAGE|FREGAT|BREEZE-M|CENTAUR|DELTA\s+STAGE/.test(rawName)) return 'rocket';
+  if (meta.isMilitary) return 'military';
+  if (app === 'weather' || /NOAA|METEOR|GOES|HIMAWARI|METOP|WEATHER/.test(rawName)) return 'weather';
+  if (app === 'earth observation') return 'earth_observation';
   if (app === 'navigation') return 'navigation';
-  if (app === 'astronomical') return 'astronomical';
-  return 'unknown';
+  if (app === 'astronomical' || isCrewed) return 'scientific';
+  if (app === 'communication') {
+    if (/STARLINK|ONEWEB|KUIPER|O3B|TDRS|SATCOM/.test(rawName)) return 'internet';
+    return 'communications';
+  }
+  return 'other';
+}
+
+function satelliteKeyFromEntity(entity) {
+  return entity?.properties?.satelliteKey?.getValue?.() ?? entity?.shadowgridMeta?.satelliteKey ?? null;
+}
+
+function isSatelliteSelected(key) {
+  return key != null && key === selectedSatelliteKey;
+}
+
+function shouldShowSatelliteOverlay(record) {
+  return satelliteInfoPanelVisible && shouldShowSatellite(record.meta) && isSatelliteSelected(record.key);
+}
+
+function getSatelliteBaseColor(meta) {
+  const key = classificationKeyForMeta(meta);
+  return Cesium.Color.fromCssColorString(SATELLITE_COLOR_MAP[key] ?? SATELLITE_COLOR_MAP.other);
+}
+
+function getSatelliteHighlightColor(meta) {
+  return Cesium.Color.lerp(getSatelliteBaseColor(meta), SATELLITE_SELECTION_ACCENT, 0.55, new Cesium.Color());
+}
+
+function getSatelliteFootprintRadiusM(positionCartesian) {
+  if (!positionCartesian) return 1;
+  const cartographic = Cesium.Cartographic.fromCartesian(positionCartesian);
+  const altitude = Math.max(cartographic?.height ?? 0, 0);
+  if (!Number.isFinite(altitude) || altitude <= 0) return 1;
+  const horizonAngle = Math.acos(Math.min(1, EARTH_RADIUS_M / (EARTH_RADIUS_M + altitude)));
+  return Math.max(1, EARTH_RADIUS_M * horizonAngle);
+}
+
+function getGroundSubpoint(positionCartesian, result) {
+  if (!positionCartesian) return undefined;
+  const cartographic = Cesium.Cartographic.fromCartesian(positionCartesian);
+  if (!cartographic) return undefined;
+  return Cesium.Cartesian3.fromRadians(
+    cartographic.longitude,
+    cartographic.latitude,
+    0,
+    Cesium.Ellipsoid.WGS84,
+    result
+  );
+}
+
+function createSatelliteTrackEntity(viewer, record, positions) {
+  if (!record.satrec) return null;
+  return viewer.entities.add({
+    polyline: {
+      show: new Cesium.CallbackProperty(() => shouldShowSatelliteOverlay(record), false),
+      positions,
+      width: 2,
+      material: new Cesium.PolylineDashMaterialProperty({
+        color: new Cesium.CallbackProperty(() => getSatelliteHighlightColor(record.meta).withAlpha(0.95, new Cesium.Color()), false),
+        dashLength: 12,
+      }),
+      arcType: Cesium.ArcType.NONE,
+      clampToGround: false,
+    },
+  });
+}
+
+function createSatelliteFootprintEntity(viewer, record) {
+  const position = new Cesium.CallbackPositionProperty((time, result) => {
+    const currentPosition = record.entity?.position?.getValue?.(time);
+    return getGroundSubpoint(currentPosition, result);
+  }, false);
+  const radius = new Cesium.CallbackProperty((time) => {
+    const currentPosition = record.entity?.position?.getValue?.(time);
+    return getSatelliteFootprintRadiusM(currentPosition);
+  }, false);
+
+  return viewer.entities.add({
+    position,
+    ellipse: {
+      show: new Cesium.CallbackProperty(() => shouldShowSatelliteOverlay(record), false),
+      semiMajorAxis: radius,
+      semiMinorAxis: radius,
+      material: new Cesium.ColorMaterialProperty(
+        new Cesium.CallbackProperty(() => getSatelliteHighlightColor(record.meta).withAlpha(0.12, new Cesium.Color()), false)
+      ),
+      outline: true,
+      outlineColor: new Cesium.CallbackProperty(() => getSatelliteHighlightColor(record.meta).withAlpha(0.9, new Cesium.Color()), false),
+      numberOfVerticalLines: 0,
+    },
+  });
+}
+
+export function setSatelliteSelection(entityOrKey, active = true) {
+  const key = typeof entityOrKey === 'string' ? entityOrKey : satelliteKeyFromEntity(entityOrKey);
+  if (!key) return;
+  if (active) {
+    selectedSatelliteKey = key;
+    return;
+  }
+  if (selectedSatelliteKey === key) {
+    selectedSatelliteKey = null;
+  }
+}
+
+export function clearSatelliteSelection() {
+  selectedSatelliteKey = null;
+  satelliteInfoPanelVisible = false;
+}
+
+export function setSatelliteInfoPanelVisible(visible) {
+  satelliteInfoPanelVisible = !!visible;
 }
 
 function getEnabledSatelliteCategories() {
@@ -219,9 +356,8 @@ export async function initSatellites(viewer) {
   return {
     setEnabled(val) {
       enabled = val;
-      satMap.forEach(({ entity, trackEntity, meta }) => {
-        entity.show      = shouldShowSatellite(meta);
-        trackEntity.show = shouldShowSatellite(meta);
+      satMap.forEach(({ entity, meta }) => {
+        entity.show = shouldShowSatellite(meta);
       });
     },
     setClassificationFilter(classification, enabled) {
@@ -229,9 +365,8 @@ export async function initSatellites(viewer) {
       if (key in classificationFilters) {
         classificationFilters[key] = enabled;
         // Update visibility of all entities
-        satMap.forEach(({ entity, trackEntity, meta }) => {
-          entity.show      = shouldShowSatellite(meta);
-          trackEntity.show = shouldShowSatellite(meta);
+        satMap.forEach(({ entity, meta }) => {
+          entity.show = shouldShowSatellite(meta);
         });
       }
     },
@@ -258,30 +393,16 @@ async function initSatellitesServerSnapshot(viewer) {
   function applyEntityVisibility(record) {
     const visible = enabledLocal && shouldShowSatellite(record.meta);
     record.entity.show = visible;
-    if (record.trackEntity) {
-      record.trackEntity.show = visible;
-    }
   }
 
   function classifyPointColor(meta) {
-    if (meta.isMilitary) {
-      return Cesium.Color.fromCssColorString('#ff3b30');
-    }
-    if ((meta.crewedStatus ?? '').toLowerCase() === 'crewed') {
-      return Cesium.Color.fromCssColorString('#00ff66');
-    }
-    switch (meta.application ?? 'Unknown') {
-      case 'Communication': return Cesium.Color.fromCssColorString('#ffea00');
-      case 'Earth Observation': return Cesium.Color.fromCssColorString('#ff9800');
-      case 'Navigation': return Cesium.Color.fromCssColorString('#9c27b0');
-      case 'Astronomical': return Cesium.Color.fromCssColorString('#e91e63');
-      default: return Cesium.Color.fromCssColorString('#00aaff');
-    }
+    return getSatelliteBaseColor(meta);
   }
 
   function buildSnapshotMeta(point) {
     if (point?.meta && typeof point.meta === 'object') {
       return {
+        rawName: point.name ?? point.meta.rawName ?? 'Unknown',
         isMilitary: point.meta.isMilitary === true,
         application: point.meta.application ?? 'Unknown',
         crewedStatus: point.meta.crewedStatus ?? 'Uncrewed',
@@ -293,8 +414,8 @@ async function initSatellitesServerSnapshot(viewer) {
 
   function upsertPoint(point) {
     const pos = Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.altM);
-    const id = String(point.id ?? point.name ?? `${point.lat}:${point.lon}`);
-    const existing = entities.get(id);
+    const key = String(point.id ?? point.name ?? `${point.lat}:${point.lon}`);
+    const existing = entities.get(key);
     const meta = buildSnapshotMeta(point);
     if (existing) {
       existing.entity.position = pos;
@@ -319,38 +440,23 @@ async function initSatellitesServerSnapshot(viewer) {
       }
     }
 
-    let trackEntity = null;
-    if (satrec) {
-      const trackPositions = computeGroundTrack(satrec, new Date());
-      trackEntity = viewer.entities.add({
-        show: false,
-        polyline: {
-          positions: trackPositions,
-          width: 1,
-          material: new Cesium.PolylineDashMaterialProperty({
-            color: Cesium.Color.fromCssColorString('#00aaff38'),
-            dashLength: 10,
-          }),
-          arcType: Cesium.ArcType.NONE,
-          clampToGround: false,
-        },
-      });
-    }
+    const record = { key, entity: null, trackEntity: null, footprintEntity: null, satrec, meta };
+    const trackEntity = satrec ? createSatelliteTrackEntity(viewer, record, computeGroundTrack(satrec, new Date())) : null;
 
     const entity = viewer.entities.add({
-      id: `sat-${id}`,
+      id: `sat-${key}`,
       position: pos,
       point: {
-        pixelSize:       15,
-        color:           classifyPointColor(meta),
-        outlineColor:    Cesium.Color.fromCssColorString('#003366'),
-        outlineWidth:    1,
+        pixelSize:       new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? 18 : 15, false),
+        color:           new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? getSatelliteHighlightColor(record.meta) : classifyPointColor(record.meta), false),
+        outlineColor:    new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? SATELLITE_SELECTION_ACCENT : SATELLITE_BASE_OUTLINE_COLOR, false),
+        outlineWidth:    new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? 2 : 1, false),
         scaleByDistance: new Cesium.NearFarScalar(1e5, 2, 1e7, 0.8),
       },
       label: {
         text:             point.name,
         font:             '24px "Share Tech Mono", monospace',
-        color:            Cesium.Color.fromCssColorString('#00aaff'),
+        color:            new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? SATELLITE_SELECTION_ACCENT : SATELLITE_BASE_LABEL_COLOR, false),
         outlineColor:     Cesium.Color.fromCssColorString('#003366'),
         outlineWidth:     2,
         style:            Cesium.LabelStyle.FILL_AND_OUTLINE,
@@ -362,6 +468,7 @@ async function initSatellitesServerSnapshot(viewer) {
       },
       shadowgridType: 'satellite',
       shadowgridMeta: {
+        satelliteKey: key,
         name: point.name,
         application: meta.application,
         isMilitary: meta.isMilitary,
@@ -370,6 +477,7 @@ async function initSatellitesServerSnapshot(viewer) {
       },
       properties: {
         type: 'satellite',
+        satelliteKey: key,
         name: point.name,
         provider: point.source ?? 'server-snapshot',
         isMilitary: meta.isMilitary,
@@ -380,8 +488,10 @@ async function initSatellitesServerSnapshot(viewer) {
       show: false,
     });
 
-    const record = { entity, trackEntity, satrec, meta };
-    entities.set(id, record);
+    record.entity = entity;
+    record.trackEntity = trackEntity;
+    record.footprintEntity = createSatelliteFootprintEntity(viewer, record);
+    entities.set(key, record);
     applyEntityVisibility(record);
   }
 
@@ -398,6 +508,7 @@ async function initSatellitesServerSnapshot(viewer) {
       if (!seen.has(id)) {
         viewer.entities.remove(record.entity);
         if (record.trackEntity) viewer.entities.remove(record.trackEntity);
+        if (record.footprintEntity) viewer.entities.remove(record.footprintEntity);
         entities.delete(id);
       }
     }
@@ -440,6 +551,7 @@ async function initSatellitesServerSnapshot(viewer) {
       }
 
       if (!record.trackEntity) continue;
+      if (!isSatelliteSelected(record.key)) continue;
       if (now.getSeconds() % 30 !== 0) continue;
       const positions = computeGroundTrack(record.satrec, now);
       record.trackEntity.polyline.positions = new Cesium.ConstantProperty(positions);
@@ -694,7 +806,7 @@ function deriveSatelliteMeta(name, line2) {
   const crewedStatus = classifyCrewedStatus(upperName);
   const orbitType = classifyOrbitType(line2);
 
-  return { isMilitary, application, crewedStatus, orbitType };
+  return { isMilitary, application, crewedStatus, orbitType, rawName: name ?? '' };
 }
 
 function classifyMilitaryStatus(upperName) {
@@ -733,6 +845,11 @@ function classifySatelliteApplication(upperName) {
     'FERMI', 'TESS', 'KEPLER', 'GAIA', 'EUCLID', 'ASTRO',
   ];
   if (astronomical.some(k => upperName.includes(k))) return 'Astronomical';
+
+  const weather = [
+    'NOAA', 'METEOR', 'METOP', 'GOES', 'HIMAWARI', 'WEATHER',
+  ];
+  if (weather.some(k => upperName.includes(k))) return 'Weather';
 
   const navigation = [
     'GPS', 'NAVSTAR', 'GLONASS', 'GALILEO', 'BEIDOU',
@@ -797,68 +914,32 @@ function addSatelliteEntity(viewer, name, satrec, meta = {}) {
   const posVel = satellite.propagate(satrec, now);
   if (!posVel.position) return;
 
-  const isMilitary = meta.isMilitary === true;
-  const isCrewed = (meta.crewedStatus ?? '').toLowerCase() === 'crewed';
-  const application = meta.application ?? 'Unknown';
+  const key = name;
+  const record = { key, entity: null, trackEntity: null, footprintEntity: null, satrec, meta };
+  const pointColor = getSatelliteBaseColor({ ...meta, rawName: name });
 
-  let pointColor;
-  if (isMilitary) {
-    pointColor = Cesium.Color.fromCssColorString('#ff3b30'); // red
-  } else if (isCrewed) {
-    pointColor = Cesium.Color.fromCssColorString('#00ff66'); // green
-  } else {
-    // Color by application type
-    switch (application) {
-      case 'Communication':
-        pointColor = Cesium.Color.fromCssColorString('#ffea00'); // yellow
-        break;
-      case 'Earth Observation':
-        pointColor = Cesium.Color.fromCssColorString('#ff9800'); // orange
-        break;
-      case 'Navigation':
-        pointColor = Cesium.Color.fromCssColorString('#9c27b0'); // purple
-        break;
-      case 'Astronomical':
-        pointColor = Cesium.Color.fromCssColorString('#e91e63'); // pink
-        break;
-      default:
-        pointColor = Cesium.Color.fromCssColorString('#00aaff'); // cyan
-        break;
-    }
-  }
+  const isMilitary = meta.isMilitary === true;
 
   const initPos        = eciToCartesian(posVel.position, now);
   const trackPositions = computeGroundTrack(satrec, now);
-
-  const trackEntity = viewer.entities.add({
-    show: shouldShowSatellite(meta),  // Initialize based on filters
-    polyline: {
-      positions: trackPositions,
-      width:     1,
-      material:  new Cesium.PolylineDashMaterialProperty({
-        color:      Cesium.Color.fromCssColorString('#00aaff38'),
-        dashLength: 10,
-      }),
-      arcType:       Cesium.ArcType.NONE,
-      clampToGround: false,
-    },
-  });
+  const trackEntity = createSatelliteTrackEntity(viewer, record, trackPositions);
 
   const entity = viewer.entities.add({
+    id: `sat-${key}`,
     position: initPos,
-    show: shouldShowSatellite(meta),  // Initialize based on filters
+    show: shouldShowSatellite(meta),
     point: {
-      pixelSize:       15,
-      color:           pointColor,
-      outlineColor:    Cesium.Color.fromCssColorString('#003366'),
-      outlineWidth:    1,
+      pixelSize:       new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? 14 : 10, false),
+      color:           new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? getSatelliteHighlightColor(record.meta) : pointColor, false),
+      outlineColor:    new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? SATELLITE_SELECTION_ACCENT : SATELLITE_BASE_OUTLINE_COLOR, false),
+      outlineWidth:    new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? 2 : 1, false),
       scaleByDistance: new Cesium.NearFarScalar(1e5, 2, 1e7, 0.8),
     },
     label: {
       text:             name,
       font:             '24px "Share Tech Mono", monospace',
-      color:           Cesium.Color.fromCssColorString('#00aaff'),
-      outlineColor:    Cesium.Color.fromCssColorString('#003366'),
+      color:            new Cesium.CallbackProperty(() => isSatelliteSelected(record.key) ? SATELLITE_SELECTION_ACCENT : SATELLITE_BASE_LABEL_COLOR, false),
+      outlineColor:     Cesium.Color.fromCssColorString('#003366'),
       outlineWidth:     2,
       style:            Cesium.LabelStyle.FILL_AND_OUTLINE,
       horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
@@ -869,6 +950,7 @@ function addSatelliteEntity(viewer, name, satrec, meta = {}) {
     },
     properties: {
       type: 'satellite',
+      satelliteKey: key,
       name,
       provider: PROVIDER,
       isMilitary,
@@ -878,17 +960,21 @@ function addSatelliteEntity(viewer, name, satrec, meta = {}) {
     },
   });
 
-  satMap.set(name, { satrec, entity, trackEntity, meta });
+  record.entity = entity;
+  record.trackEntity = trackEntity;
+  record.footprintEntity = createSatelliteFootprintEntity(viewer, record);
+
+  satMap.set(name, record);
 }
 
 // ── Per-frame position update ─────────────────────────────────────────────────
 
-function updatePosition({ satrec, entity, trackEntity }, now) {
+function updatePosition({ key, satrec, entity, trackEntity }, now) {
   const posVel = satellite.propagate(satrec, now);
   if (!posVel.position) return;
   entity.position = eciToCartesian(posVel.position, now);
 
-  if (now.getSeconds() % 30 === 0) {
+  if (trackEntity && isSatelliteSelected(key) && now.getSeconds() % 30 === 0) {
     const positions = computeGroundTrack(satrec, now);
     trackEntity.polyline.positions = new Cesium.ConstantProperty(positions);
   }

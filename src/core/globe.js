@@ -13,6 +13,10 @@ const SERVER_HEAVY_MODE = (import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').to
 const GOOGLE_KEY   =  import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const CESIUM_TOKEN =  import.meta.env.VITE_CESIUM_ION_TOKEN    ?? '';
 const MAPTILER_KEY =  import.meta.env.VITE_MAPTILER_API_KEY    ?? '';
+const DAYNIGHT_ENABLED = (import.meta.env.VITE_DAYNIGHT_ENABLED ?? 'true').toLowerCase() !== 'false';
+const DAYNIGHT_TIME_MODE = (import.meta.env.VITE_DAYNIGHT_TIME_MODE ?? 'realtime').toLowerCase();
+const DAYNIGHT_TIME_MULTIPLIER = Number(import.meta.env.VITE_DAYNIGHT_TIME_MULTIPLIER ?? '240');
+const DYNAMIC_LABELS_ENABLED = (import.meta.env.VITE_DYNAMIC_LABELS ?? 'true').toLowerCase() !== 'false';
 
 const GOOGLE_TILESET_URL = SERVER_HEAVY_MODE
   ? '/api/localproxy/tiles/google/v1/3dtiles/root.json'
@@ -69,9 +73,26 @@ function applySceneSettings(viewer) {
   const scene = viewer.scene;
   scene.backgroundColor                = Cesium.Color.BLACK;
   scene.fog.enabled                    = false;
-  scene.globe.enableLighting           = false;
+  setDayNightEffectEnabled(viewer, DAYNIGHT_ENABLED);
   scene.globe.depthTestAgainstTerrain  = true;
   scene.postProcessStages.fxaa.enabled = true;
+
+  if (DAYNIGHT_ENABLED) {
+    // Use real UTC by default so the terminator matches current time accurately.
+    // Optional cinematic mode can be enabled via env vars when desired.
+    if (DAYNIGHT_TIME_MODE === 'accelerated') {
+      viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+      viewer.clock.multiplier = Number.isFinite(DAYNIGHT_TIME_MULTIPLIER)
+        ? DAYNIGHT_TIME_MULTIPLIER
+        : 240;
+      viewer.clock.shouldAnimate = true;
+    } else {
+      viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK;
+      viewer.clock.multiplier = 1;
+      viewer.clock.shouldAnimate = true;
+      viewer.clock.currentTime = Cesium.JulianDate.now();
+    }
+  }
 
   // ── Google Earth-style camera controls ───────────────────────────────────
   const ctrl = viewer.scene.screenSpaceCameraController;
@@ -126,32 +147,91 @@ function applySceneSettings(viewer) {
   }, { passive: false });
 }
 
+function setDayNightEffectEnabled(viewer, enabled) {
+  const scene = viewer.scene;
+  scene.globe.enableLighting = enabled;
+  scene.globe.dynamicAtmosphereLighting = enabled;
+  scene.globe.dynamicAtmosphereLightingFromSun = enabled;
+  scene.globe.showGroundAtmosphere = enabled;
+  scene.skyAtmosphere.show = enabled;
+}
+
 
 // ── Labels + borders overlay ──────────────────────────────────────────────────
 // Adds a transparent country/city labels + borders layer on top of any base imagery.
 // Uses Cesium ion asset 3812 (Cesium OSM Labels) — free, no extra key needed.
 
 async function addLabelsOverlay(viewer) {
+  if (!DYNAMIC_LABELS_ENABLED) {
+    console.info('[ShadowGrid] Dynamic labels disabled by VITE_DYNAMIC_LABELS=false');
+    return;
+  }
+
   try {
-    // Use public Stamen Toner overlays via Stadia instead of ion asset 3812,
-    // which now returns 404 in some accounts/regions.
-    viewer.imageryLayers.addImageryProvider(
+    // Use one adaptive label source (which naturally increases detail by zoom)
+    // and toggle visibility by altitude to avoid overloading lower-end GPUs.
+    const boundaries = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
         url:    'https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png',
         credit: '© Stadia Maps © Stamen Design © OpenStreetMap contributors',
-        minimumLevel: 0,
-        maximumLevel: 20,
+        minimumLevel: 2,
+        maximumLevel: 16,
       })
     );
-    viewer.imageryLayers.addImageryProvider(
+
+    const adaptiveLabels = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
-        url:    'https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png',
-        credit: '© Stadia Maps © Stamen Design © OpenStreetMap contributors',
+        url:    'https://basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png',
+        credit: '© OpenStreetMap contributors © CARTO',
         minimumLevel: 0,
         maximumLevel: 20,
       })
     );
-    console.info('[ShadowGrid] Labels + borders overlay added ✓');
+
+    const LABEL_HEIGHT = {
+      hideAllAbove:      9_000_000,
+      showBoundariesBelow: 4_500_000,
+      showLabelsBelow:     2_000_000,
+    };
+
+    let orbitalSuppressed = false;
+    let dayNightSuppressedForLabels = false;
+
+    function syncLabelVisibility() {
+      const h = viewer.camera.positionCartographic?.height ?? Number.POSITIVE_INFINITY;
+      const allowAny = h <= LABEL_HEIGHT.hideAllAbove;
+      const visible = allowAny && !orbitalSuppressed;
+
+      boundaries.show = visible && h <= LABEL_HEIGHT.showBoundariesBelow;
+      adaptiveLabels.show = visible && h <= LABEL_HEIGHT.showLabelsBelow;
+
+      // Fade in labels as the camera gets closer for smoother transitions.
+      if (adaptiveLabels.show) {
+        const fadeRange = 350_000;
+        const start = LABEL_HEIGHT.showLabelsBelow;
+        const t = Cesium.Math.clamp((start - h) / fadeRange, 0, 1);
+        adaptiveLabels.alpha = 0.4 + 0.6 * t;
+      }
+
+      if (DAYNIGHT_ENABLED) {
+        const shouldSuppressDayNight = visible && h <= LABEL_HEIGHT.showLabelsBelow;
+        if (shouldSuppressDayNight !== dayNightSuppressedForLabels) {
+          dayNightSuppressedForLabels = shouldSuppressDayNight;
+          setDayNightEffectEnabled(viewer, !dayNightSuppressedForLabels);
+        }
+      }
+    }
+
+    window.addEventListener('shadowgrid:camera-orbital-mode', (ev) => {
+      orbitalSuppressed = !!ev?.detail?.enabled;
+      syncLabelVisibility();
+    });
+
+    viewer.camera.changed.addEventListener(syncLabelVisibility);
+    viewer.camera.moveEnd.addEventListener(syncLabelVisibility);
+    syncLabelVisibility();
+
+    console.info('[ShadowGrid] Dynamic labels overlay added ✓');
   } catch (err) {
     console.warn('[ShadowGrid] Labels overlay unavailable:', err.message);
   }

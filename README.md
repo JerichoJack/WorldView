@@ -196,6 +196,57 @@ Set `VITE_TRAFFIC_PROVIDER` to one of:
 
 ---
 
+### 🛰️ Satellite Imagery Viewer
+
+The HUD Imagery panel now pulls preview imagery through the local proxy route `/api/localproxy/api/satellite-imagery/preview`.
+
+- Requests are now validated server-side for allowed `collection + bands + source` combinations.
+- The viewer enforces backend policy by collection authority, while still allowing configured credential-backed backends when available:
+
+| Authority | Preferred Backend | Credentials Required? |
+|---|---|---|
+| ESA Copernicus | Copernicus Data Space | ✅ Yes |
+| ESA Copernicus / Sentinel-5P | Copernicus Data Space | ✅ Yes |
+| NASA / USGS (Landsat) | Copernicus Data Space | ✅ Yes |
+| NASA (MODIS) | NASA GIBS (default) | ❌ No |
+| NOAA VIIRS (Night Lights) | NASA GIBS (default) | ❌ No |
+| NASA VIIRS | NASA GIBS (default) | ❌ No |
+| NOAA GOES | NASA GIBS (default) | ❌ No |
+| NASA / METI ASTER | Copernicus Data Space | ✅ Yes |
+| NASA ASTER | Copernicus Data Space | ✅ Yes |
+
+- Copernicus Data Space credentials are required for Copernicus-backed collections. Add these to `.env`:
+
+```env
+COPERNICUS_DATASPACE_INSTANCE_ID=your_instance_id_here
+COPERNICUS_DATASPACE_TRUE_COLOR_LAYER=TRUE_COLOR
+COPERNICUS_DATASPACE_FALSE_COLOR_LAYER=FALSE_COLOR
+```
+
+- Sentinel Hub remains supported as an optional credential-backed fallback for compatible collections:
+
+```env
+SENTINEL_HUB_INSTANCE_ID=your_instance_id_here
+SENTINEL_HUB_TRUE_COLOR_LAYER=TRUE_COLOR
+SENTINEL_HUB_FALSE_COLOR_LAYER=FALSE_COLOR
+```
+
+- Optional imagery backend preference for `Source=Auto`:
+
+```env
+VITE_SATELLITE_IMAGERY_PROVIDER=auto
+```
+
+Allowed values: `auto`, `copernicus-dataspace`, `sentinel-hub`, `nasa-gibs`.
+
+- `VITE_SATELLITE_IMAGERY_PROVIDER` controls imagery backend preference only, and is separate from `VITE_SATELLITE_PROVIDER` (satellite object/TLE provider).
+
+- `Auto` source now prioritizes the configured imagery provider (`VITE_SATELLITE_IMAGERY_PROVIDER`; legacy fallback to `VITE_SATELLITE_PROVIDER` is still supported), then falls back through policy-backed providers and finally basemap.
+- For Copernicus-backed collections, missing credentials now return a clear API error with setup guidance.
+- NASA GIBS-backed collections run credential-free and fall back to basemap if remote imagery is unavailable.
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -226,12 +277,24 @@ VITE_CESIUM_ION_TOKEN=your_cesium_ion_token_here
 VITE_FLIGHT_PROVIDER=opensky
 
 VITE_SATELLITE_PROVIDER=celestrak
+VITE_SATELLITE_IMAGERY_PROVIDER=auto
 ```
 
 Then generate camera database and tiles (for CCTV layer):
 
 ```bash
 node server/collectors/collectCameras.mjs
+```
+
+By default this pulls OSM `man_made=surveillance` objects via Overpass and keeps entries matching `manufacturer=Flock Safety`.
+
+Other modes:
+
+```bash
+node server/collectors/collectCameras.mjs --mode=trafficvision          # Legacy feed mode
+node server/collectors/collectCameras.mjs --mode=both                   # Both trafficvision + OSM (deduplicated)
+node server/collectors/collectCameras.mjs --osm-manufacturer="Axis"     # Custom manufacturer filter
+node server/collectors/collectCameras.mjs --osm-all=true                # All OSM surveillance (no filter)
 ```
 
 ### Run locally
@@ -356,10 +419,12 @@ ShadowGrid/
 - ✅ Phase 4 — Street traffic system (Google live traffic + OSM fallback)
 - ✅ Phase 5 — CCTV tiled camera layer + live snapshot/video inspection panel
 - ✅ Phase 6 — FAA TFR "Safe Flight" polygons, GPSJam medium/high interference hexagons, and IODA blackout polygons tied to Flight/Internet layers with click-to-inspect detail panels.
-- ✅ Phase 7 — Visual shaders (Normal, NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
-- ⬜ Phase 8 — Historical storage + replay backend (replace transient snapshot cache with durable spatial/time-indexed storage)
-- ⬜ Phase 9 — 4D timeline + data archival / replay with archived snapshots and a real time slider
-- ⬜ Phase 10 — Performance optimizations, mobile support, and UI polish
+- ✅ Phase 7 — Visual shaders (Normal, NVG, FLIR, CRT, Anime (don't know if it'll stay, likely not...)) via WebGL PostProcessStage + CSS overlays
+- ⬜ Phase 8 - Add Satellite Imagery Viewer panel with backend routing and collection-specific policy enforcement for Copernicus Data Space, Sentinel Hub, and NASA GIBS imagery sources (Working, some bugs to work out still)
+- ⬜ Phase 9 - Add Maritime layer with live ship traffic (AIS) and coastal radar coverage areas (Phase 9 — stub, not yet fully implemented)
+- ⬜ Phase 10 — Historical storage + replay backend (replace transient snapshot cache with durable spatial/time-indexed storage)
+- ⬜ Phase 11 — 4D timeline + data archival / replay with archived snapshots and a real time slider
+- ⬜ Phase 12 — Performance optimizations, mobile support, and UI polish
 
 ---
 
@@ -420,4 +485,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [N2YO](https://n2yo.com) — satellite tracking API
 - [satellite.js](https://github.com/shashwatak/satellite-js) — SGP4 orbital propagation
 - [ipapi.co](https://ipapi.co) — IP geolocation for startup camera placement
-- [TrafficVision](https://trafficvision.live/) — aggregated global public traffic camera feed data used to build the CCTV layer; built by [Noah Eisenbruch (NERKTEK)](https://trafficvision.live/)
+- [TrafficVision](https://trafficvision.live/) — aggregated global public traffic camera feed data used to build parts of the CCTV layer; built by [Noah Eisenbruch (NERKTEK)](https://trafficvision.live/)
+- [Surveillance under Surveillance](https://sunders.uber.space/) — project tracking global surveillance cameras, inspired parts of the CCTV layer

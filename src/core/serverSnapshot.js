@@ -44,6 +44,7 @@ function publishDiagnostics(payload = null, error = null) {
       flights: Number.isFinite(payload?.flights?.ts) ? Math.max(0, now - payload.flights.ts) : null,
       satellites: Number.isFinite(payload?.satellites?.ts) ? Math.max(0, now - payload.satellites.ts) : null,
       traffic: Number.isFinite(payload?.traffic?.ts) ? Math.max(0, now - payload.traffic.ts) : null,
+      marine: Number.isFinite(payload?.marine?.ts) ? Math.max(0, now - payload.marine.ts) : null,
       cameras: Number.isFinite(payload?.cameras?.ts) ? Math.max(0, now - payload.cameras.ts) : null,
     },
     error: error ? (error?.message ?? String(error)) : null,
@@ -71,7 +72,7 @@ function getViewportBounds() {
 }
 
 function activeLayersNeedBounds() {
-  return activeLayers.has('flights') || activeLayers.has('traffic') || activeLayers.has('cameras');
+  return activeLayers.has('flights') || activeLayers.has('traffic') || activeLayers.has('marine') || activeLayers.has('cameras');
 }
 
 function buildSnapshotUrl() {

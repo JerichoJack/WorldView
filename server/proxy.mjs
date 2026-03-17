@@ -21,6 +21,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 import * as satellite from 'satellite.js';
 import { cellToBoundary } from 'h3-js';
 import { feature as topojsonFeature } from 'topojson-client';
@@ -58,12 +59,31 @@ const DOTENV_VARS = loadDotEnvVars();
 const GOOGLE_ROUTES_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || DOTENV_VARS.get('VITE_GOOGLE_MAPS_API_KEY') || '';
 const BACKEND_FLIGHT_PROVIDER = (process.env.VITE_FLIGHT_PROVIDER || DOTENV_VARS.get('VITE_FLIGHT_PROVIDER') || 'opensky').toLowerCase();
 const BACKEND_SATELLITE_PROVIDER = (process.env.VITE_SATELLITE_PROVIDER || DOTENV_VARS.get('VITE_SATELLITE_PROVIDER') || 'celestrak').toLowerCase();
+const BACKEND_SATELLITE_IMAGERY_PROVIDER = (
+  process.env.VITE_SATELLITE_IMAGERY_PROVIDER
+  || DOTENV_VARS.get('VITE_SATELLITE_IMAGERY_PROVIDER')
+  || process.env.SATELLITE_IMAGERY_PROVIDER
+  || DOTENV_VARS.get('SATELLITE_IMAGERY_PROVIDER')
+  // Backward-compat fallback: older setups may have used VITE_SATELLITE_PROVIDER.
+  || process.env.VITE_SATELLITE_PROVIDER
+  || DOTENV_VARS.get('VITE_SATELLITE_PROVIDER')
+  || ''
+).toLowerCase();
 const BACKEND_TRAFFIC_PROVIDER = (process.env.VITE_TRAFFIC_PROVIDER || DOTENV_VARS.get('VITE_TRAFFIC_PROVIDER') || 'auto').toLowerCase();
+const BACKEND_MARINE_PROVIDER = (process.env.VITE_MARINE_PROVIDER || DOTENV_VARS.get('VITE_MARINE_PROVIDER') || 'auto').toLowerCase();
 const OPENSKY_CLIENT_ID = process.env.VITE_OPENSKY_CLIENT_ID || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_ID') || '';
 const OPENSKY_CLIENT_SECRET = process.env.VITE_OPENSKY_CLIENT_SECRET || DOTENV_VARS.get('VITE_OPENSKY_CLIENT_SECRET') || '';
 const SPACETRACK_USER = process.env.VITE_SPACETRACK_USERNAME || DOTENV_VARS.get('VITE_SPACETRACK_USERNAME') || '';
 const SPACETRACK_PASS = process.env.VITE_SPACETRACK_PASSWORD || DOTENV_VARS.get('VITE_SPACETRACK_PASSWORD') || '';
 const N2YO_KEY = process.env.VITE_N2YO_API_KEY || DOTENV_VARS.get('VITE_N2YO_API_KEY') || '';
+const AIS_PROXY_URL = process.env.VITE_MARINE_AIS_PROXY_URL || DOTENV_VARS.get('VITE_MARINE_AIS_PROXY_URL') || '';
+const AIS_PROXY_KEY = process.env.VITE_MARINE_AIS_PROXY_KEY || DOTENV_VARS.get('VITE_MARINE_AIS_PROXY_KEY') || '';
+const SENTINEL_HUB_INSTANCE_ID = process.env.SENTINEL_HUB_INSTANCE_ID || process.env.VITE_SENTINEL_HUB_INSTANCE_ID || DOTENV_VARS.get('SENTINEL_HUB_INSTANCE_ID') || DOTENV_VARS.get('VITE_SENTINEL_HUB_INSTANCE_ID') || '';
+const SENTINEL_HUB_TRUE_COLOR_LAYER = process.env.SENTINEL_HUB_TRUE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_TRUE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_TRUE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_TRUE_COLOR_LAYER') || 'TRUE_COLOR';
+const SENTINEL_HUB_FALSE_COLOR_LAYER = process.env.SENTINEL_HUB_FALSE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_FALSE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_FALSE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_FALSE_COLOR_LAYER') || SENTINEL_HUB_TRUE_COLOR_LAYER;
+const COPERNICUS_DATASPACE_INSTANCE_ID = process.env.COPERNICUS_DATASPACE_INSTANCE_ID || DOTENV_VARS.get('COPERNICUS_DATASPACE_INSTANCE_ID') || '';
+const COPERNICUS_DATASPACE_TRUE_COLOR_LAYER = process.env.COPERNICUS_DATASPACE_TRUE_COLOR_LAYER || DOTENV_VARS.get('COPERNICUS_DATASPACE_TRUE_COLOR_LAYER') || 'TRUE_COLOR';
+const COPERNICUS_DATASPACE_FALSE_COLOR_LAYER = process.env.COPERNICUS_DATASPACE_FALSE_COLOR_LAYER || DOTENV_VARS.get('COPERNICUS_DATASPACE_FALSE_COLOR_LAYER') || COPERNICUS_DATASPACE_TRUE_COLOR_LAYER;
 const SATELLITE_MAX_PER_CATEGORY = Math.max(parseInt(process.env.VITE_SATELLITE_MAX_PER_CATEGORY || DOTENV_VARS.get('VITE_SATELLITE_MAX_PER_CATEGORY') || DOTENV_VARS.get('VITE_SATELLITE_MAX_OBJECTS') || '500', 10) || 500, 1);
 
 // ── Satellite snapshot cache (server-side propagation mode) ─────────────────
@@ -71,6 +91,7 @@ const SAT_CATALOG_TTL_MS = 10 * 60_000;
 const SAT_SNAPSHOT_POLL_TIMEOUT_MS = 8000;
 const SAT_SNAPSHOT_TTL_MS = 5_000;
 const TRAFFIC_SNAPSHOT_TTL_MS = 45_000;
+const MARINE_SNAPSHOT_TTL_MS = 30_000;
 const FLIGHT_SNAPSHOT_TTL_MS = SERVER_HEAVY_MODE ? 3_000 : 1_500;
 const CAMERA_MANIFEST_TTL_MS = 10 * 60_000;
 const CAMERA_TILE_CACHE_TTL_MS = 15 * 60_000;
@@ -96,8 +117,19 @@ const CAMERA_MAX_POINTS = Math.max(parseInt(process.env.SHADOWGRID_CAMERA_MAX_PO
 const CACHE_DIR = path.resolve(process.cwd(), 'server', 'cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'world-snapshot-cache.json');
 const TILE_CACHE_DIR = path.join(CACHE_DIR, 'tile-http');
+const CAMERA_STREAM_DIR = path.join(CACHE_DIR, 'camera-streams');
 const TILE_CACHE_TTL_MS = 12 * 60 * 60_000;
 const TILE_CACHE_STALE_MS = 7 * 24 * 60 * 60_000;
+const CAMERA_STREAM_IDLE_MS = 2 * 60_000;
+const CAMERA_STREAM_BOOT_TIMEOUT_MS = 8_000;
+const NASA_GIBS_WMS_URL = 'https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi';
+const SENTINEL_HUB_WMS_URL = SENTINEL_HUB_INSTANCE_ID
+  ? `https://services.sentinel-hub.com/ogc/wms/${SENTINEL_HUB_INSTANCE_ID}`
+  : '';
+const COPERNICUS_DATASPACE_WMS_URL = COPERNICUS_DATASPACE_INSTANCE_ID
+  ? `https://sh.dataspace.copernicus.eu/ogc/wms/${COPERNICUS_DATASPACE_INSTANCE_ID}`
+  : '';
+const SATELLITE_PREVIEW_IMAGE_SIZE = 768;
 let satCatalogTs = 0;
 /** @type {Array<{id:string,name:string,line1:string,line2:string,satrec:any,meta:any,category:string}>} */
 let satCatalog = [];
@@ -106,6 +138,10 @@ let satSnapshotCache = { ts: 0, points: [], source: 'unknown', maxCount: 0, perC
 let openSkyToken = '';
 let openSkyTokenExp = 0;
 const tileFetchInFlight = new Map();
+const cameraStreamSessions = new Map();
+let cameraStreamCleanupTimer = null;
+let ffmpegChecked = false;
+let ffmpegAvailable = false;
 
 const N2YO_SNAPSHOT_TTL_MS = 120_000;
 const N2YO_SAMPLE_POINTS = [
@@ -124,6 +160,8 @@ const N2YO_SAMPLE_POINTS = [
 const flightSnapshotCache = new Map();
 /** @type {Map<string, {ts:number, payload:any}>} */
 const trafficSnapshotCache = new Map();
+/** @type {Map<string, {ts:number, payload:any}>} */
+const marineSnapshotCache = new Map();
 
 /** @type {{ts:number, tileDeg:number, tiles:Array<{key:string,lat:number,lng:number,count:number}>}} */
 let cameraManifestCache = { ts: 0, tileDeg: 5, tiles: [] };
@@ -146,6 +184,839 @@ function ensureTileCacheDir() {
   if (!fs.existsSync(TILE_CACHE_DIR)) {
     fs.mkdirSync(TILE_CACHE_DIR, { recursive: true });
   }
+}
+
+function ensureCameraStreamDir() {
+  if (!fs.existsSync(CAMERA_STREAM_DIR)) {
+    fs.mkdirSync(CAMERA_STREAM_DIR, { recursive: true });
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeIsoDate(value) {
+  const fallback = new Date().toISOString().slice(0, 10);
+  if (!value) return fallback;
+  const parsed = new Date(String(value));
+  if (!Number.isFinite(parsed.getTime())) return fallback;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function canonicalizeBandExpression(value) {
+  return String(value ?? '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(',');
+}
+
+const SATELLITE_ALLOWED_SOURCES = new Set(['auto', 'nasa-gibs', 'sentinel-hub', 'copernicus-dataspace', 'basemap']);
+
+const SATELLITE_COLLECTION_BAND_ALLOWLIST = new Map([
+  ['COPERNICUS/S2_SR_HARMONIZED', new Set(['B4,B3,B2', 'B8,B4,B3', 'B12,B8,B4', 'B11,B8,B2'])],
+  ['COPERNICUS/S2_HARMONIZED', new Set(['B4,B3,B2', 'B8,B4,B3', 'B12,B8,B4', 'B11,B8,B2'])],
+  ['COPERNICUS/S1_GRD', new Set(['VV', 'VH', 'VV,VH'])],
+  ['COPERNICUS/S3/OLCI', new Set(['Oa08_radiance,Oa06_radiance,Oa04_radiance', 'Oa17_radiance,Oa08_radiance,Oa06_radiance', 'Oa21_radiance,Oa17_radiance,Oa08_radiance'])],
+  ['COPERNICUS/S5P/OFFL/L3_NO2', new Set(['tropospheric_NO2_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_CO', new Set(['CO_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_SO2', new Set(['SO2_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_CH4', new Set(['CH4_column_volume_mixing_ratio_dry_air'])],
+  ['COPERNICUS/S5P/OFFL/L3_AER_AI', new Set(['absorbing_aerosol_index'])],
+  ['LANDSAT/LC09/C02/T1_L2', new Set(['SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B6,SR_B5,SR_B4', 'SR_B6,SR_B5,SR_B2'])],
+  ['LANDSAT/LC08/C02/T1_L2', new Set(['SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B6,SR_B5,SR_B4', 'SR_B6,SR_B5,SR_B2'])],
+  ['LANDSAT/LE07/C02/T1_L2', new Set(['SR_B3,SR_B2,SR_B1', 'SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B5,SR_B4,SR_B2'])],
+  ['LANDSAT/LT05/C02/T1_L2', new Set(['SR_B3,SR_B2,SR_B1', 'SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B5,SR_B4,SR_B2'])],
+  ['LANDSAT/LC09/C02/T1_TOA', new Set(['B4,B3,B2', 'B5,B4,B3', 'B6,B5,B4', 'B6,B5,B2'])],
+  ['LANDSAT/LC08/C02/T1_TOA', new Set(['B4,B3,B2', 'B5,B4,B3', 'B6,B5,B4', 'B6,B5,B2'])],
+  ['MODIS/061/MOD09GA', new Set(['sur_refl_b01,sur_refl_b04,sur_refl_b03', 'sur_refl_b02,sur_refl_b01,sur_refl_b04', 'sur_refl_b06,sur_refl_b02,sur_refl_b01', 'sur_refl_b06,sur_refl_b02,sur_refl_b04'])],
+  ['MODIS/061/MYD09GA', new Set(['sur_refl_b01,sur_refl_b04,sur_refl_b03', 'sur_refl_b02,sur_refl_b01,sur_refl_b04', 'sur_refl_b06,sur_refl_b02,sur_refl_b01', 'sur_refl_b06,sur_refl_b02,sur_refl_b04'])],
+  ['MODIS/061/MOD09GQ', new Set(['sur_refl_b01,sur_refl_b02,sur_refl_b01', 'sur_refl_b02,sur_refl_b01,sur_refl_b02'])],
+  ['MODIS/061/MOD13Q1', new Set(['NDVI', 'EVI'])],
+  ['MODIS/061/MOD11A2', new Set(['LST_Day_1km', 'LST_Night_1km'])],
+  ['MODIS/061/MOD14A1', new Set(['FireMask', 'MaxFRP'])],
+  ['MODIS/061/MOD10A1', new Set(['NDSI_Snow_Cover', 'NDSI_Snow_Cover_Basic_QA'])],
+  ['MODIS/061/MCD43A4', new Set(['Nadir_Reflectance_Band1,Nadir_Reflectance_Band4,Nadir_Reflectance_Band3', 'Nadir_Reflectance_Band2,Nadir_Reflectance_Band1,Nadir_Reflectance_Band4', 'Nadir_Reflectance_Band6,Nadir_Reflectance_Band2,Nadir_Reflectance_Band1', 'Nadir_Reflectance_Band6,Nadir_Reflectance_Band2,Nadir_Reflectance_Band4'])],
+  ['NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG', new Set(['avg_rad'])],
+  ['NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG', new Set(['avg_rad'])],
+  ['NASA/VIIRS/VNP46A1', new Set(['DNB_BRDF_Corrected_NTL'])],
+  ['NOAA/VIIRS/001/VNP09GA', new Set(['M5,M4,M3', 'M7,M5,M4', 'M11,M7,M5', 'M11,M7,M4'])],
+  ['NOAA/VIIRS/001/VNP13A1', new Set(['NDVI', 'EVI', 'EVI2'])],
+  ['NOAA/GOES/16/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C08', 'CMI_C13'])],
+  ['NOAA/GOES/17/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C13'])],
+  ['NOAA/GOES/18/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C13'])],
+  ['ASTER/AST_L1T_003', new Set(['B3N,B02,B01', 'B04,B3N,B02', 'B3N', 'B04,B05,B06', 'B10,B11,B12'])],
+  ['NASA/ASTER_GED/AG100_003', new Set(['elevation', 'emissivity_mean', 'temperature'])],
+]);
+
+function getSatelliteCredentialSetupHint() {
+  return [
+    'Set SENTINEL_HUB_INSTANCE_ID in server .env (or environment).',
+    'Optionally set SENTINEL_HUB_TRUE_COLOR_LAYER and SENTINEL_HUB_FALSE_COLOR_LAYER.',
+    'Create/get credentials from Sentinel Hub Dashboard: https://apps.sentinel-hub.com/dashboard/',
+  ].join(' ');
+}
+
+function getCopernicusDataspaceSetupHint() {
+  return [
+    'Set COPERNICUS_DATASPACE_INSTANCE_ID in server .env (or environment).',
+    'Optionally set COPERNICUS_DATASPACE_TRUE_COLOR_LAYER and COPERNICUS_DATASPACE_FALSE_COLOR_LAYER.',
+    'Create/get your free Copernicus Data Space Browser instance from: https://dataspace.copernicus.eu/',
+  ].join(' ');
+}
+
+function getCollectionBackendPolicy(collectionId) {
+  const id = String(collectionId || '').trim().toUpperCase();
+
+  if (id.startsWith('COPERNICUS/S5P/')) {
+    return {
+      authority: 'ESA Copernicus / Sentinel-5P',
+      preferredBackend: 'nasa-gibs', // changed from 'copernicus-dataspace' for troubleshooting
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'], // added 'nasa-gibs' for troubleshooting
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id.startsWith('COPERNICUS/')) {
+    return {
+      authority: 'ESA Copernicus',
+      preferredBackend: 'nasa-gibs', // changed from 'copernicus-dataspace' for troubleshooting
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'], // added 'nasa-gibs' for troubleshooting
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id.startsWith('LANDSAT/')) {
+    return {
+      authority: 'NASA / USGS',
+      preferredBackend: 'nasa-gibs', // changed from 'copernicus-dataspace' for troubleshooting
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'], // added 'nasa-gibs' for troubleshooting
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id === 'MODIS/061/MOD09GA' || id === 'MODIS/061/MYD09GA' || id === 'MODIS/061/MOD09GQ' || id === 'MODIS/061/MOD13Q1' || id === 'MODIS/061/MOD11A2' || id === 'MODIS/061/MOD14A1' || id === 'MODIS/061/MOD10A1' || id === 'MODIS/061/MCD43A4') {
+    return {
+      authority: 'NASA',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG' || id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG') {
+    return {
+      authority: 'NOAA VIIRS',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id === 'NASA/VIIRS/VNP46A1') {
+    return {
+      authority: 'NASA VIIRS Black Marble',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id.startsWith('NOAA/VIIRS/')) {
+    return {
+      authority: 'NASA VIIRS',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id.startsWith('NOAA/GOES/')) {
+    return {
+      authority: 'NOAA GOES',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id === 'ASTER/AST_L1T_003') {
+    return {
+      authority: 'NASA / METI ASTER',
+      preferredBackend: 'nasa-gibs', // changed from 'copernicus-dataspace' for troubleshooting
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'], // added 'nasa-gibs' for troubleshooting
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id === 'NASA/ASTER_GED/AG100_003') {
+    return {
+      authority: 'NASA ASTER',
+      preferredBackend: 'nasa-gibs', // changed from 'copernicus-dataspace' for troubleshooting
+      allowedSources: ['auto', 'nasa-gibs', 'copernicus-dataspace', 'sentinel-hub', 'basemap'], // added 'nasa-gibs' for troubleshooting
+      requiresRemoteCredentials: true,
+    };
+  }
+
+  return {
+    authority: 'Unknown',
+    preferredBackend: 'nasa-gibs',
+    allowedSources: ['auto', 'nasa-gibs', 'sentinel-hub', 'copernicus-dataspace', 'basemap'],
+    requiresRemoteCredentials: false,
+  };
+}
+
+function validateSatelliteImageryRequest({ lat, lon, date, source, collectionId, bands }) {
+  const safeSource = String(source ?? 'auto').trim().toLowerCase();
+  if (!SATELLITE_ALLOWED_SOURCES.has(safeSource)) {
+    return { ok: false, error: `Invalid source '${safeSource}'. Allowed values: auto, nasa-gibs, sentinel-hub, copernicus-dataspace, basemap.` };
+  }
+
+  const safeCollectionId = String(collectionId ?? '').trim();
+  if (!SATELLITE_COLLECTION_BAND_ALLOWLIST.has(safeCollectionId)) {
+    return { ok: false, error: `Unsupported collection '${safeCollectionId}'.` };
+  }
+
+  const policy = getCollectionBackendPolicy(safeCollectionId);
+  if (!policy.allowedSources.includes(safeSource)) {
+    return { ok: false, error: `Collection '${safeCollectionId}' must use source '${policy.preferredBackend}' (or auto/basemap).` };
+  }
+
+  if (policy.requiresRemoteCredentials) {
+    const hasCopernicus = Boolean(COPERNICUS_DATASPACE_WMS_URL);
+    const hasSentinel = Boolean(SENTINEL_HUB_WMS_URL);
+    if (safeSource === 'copernicus-dataspace' && !hasCopernicus) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires Copernicus Data Space credentials for source copernicus-dataspace. ${getCopernicusDataspaceSetupHint()}`,
+      };
+    }
+    if (safeSource === 'sentinel-hub' && !hasSentinel) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires Sentinel Hub credentials for source sentinel-hub. ${getSatelliteCredentialSetupHint()}`,
+      };
+    }
+    if (safeSource === 'auto' && !hasCopernicus && !hasSentinel) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires either Copernicus Data Space or Sentinel Hub credentials. ${getCopernicusDataspaceSetupHint()} ${getSatelliteCredentialSetupHint()}`,
+      };
+    }
+  }
+
+  const safeBands = canonicalizeBandExpression(bands);
+  if (!safeBands) {
+    return { ok: false, error: 'Bands is required.' };
+  }
+
+  const allowedBands = SATELLITE_COLLECTION_BAND_ALLOWLIST.get(safeCollectionId);
+  if (!allowedBands.has(safeBands)) {
+    return { ok: false, error: `Bands '${safeBands}' are not valid for collection '${safeCollectionId}'.` };
+  }
+
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return { ok: false, error: 'lat/lon out of range. Expected lat [-90..90], lon [-180..180].' };
+  }
+
+  const rawDate = String(date ?? '').trim();
+  let safeDate = normalizeIsoDate(rawDate);
+  if (rawDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      return { ok: false, error: `Date '${rawDate}' must be in YYYY-MM-DD format.` };
+    }
+    const parsed = new Date(rawDate);
+    if (!Number.isFinite(parsed.getTime())) {
+      return { ok: false, error: `Date '${rawDate}' is invalid.` };
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
+    if (rawDate > todayIso) {
+      return { ok: false, error: `Date '${rawDate}' cannot be in the future.` };
+    }
+    safeDate = rawDate;
+  }
+
+  return {
+    ok: true,
+    value: {
+      lat,
+      lon,
+      date: safeDate,
+      source: safeSource,
+      collectionId: safeCollectionId,
+      bands: safeBands,
+      backendPolicy: policy,
+    },
+  };
+}
+
+function computeImageryRectangle(lat, lon, radiusKm = 80) {
+  const safeLat = clamp(Number(lat) || 0, -85, 85);
+  const safeLon = ((((Number(lon) || 0) + 180) % 360) + 360) % 360 - 180;
+  const latDelta = radiusKm / 111;
+  const cosLat = Math.max(Math.cos((safeLat * Math.PI) / 180), 0.2);
+  const lonDelta = radiusKm / (111 * cosLat);
+  return {
+    west: clamp(safeLon - lonDelta, -180, 180),
+    south: clamp(safeLat - latDelta, -85, 85),
+    east: clamp(safeLon + lonDelta, -180, 180),
+    north: clamp(safeLat + latDelta, -85, 85),
+  };
+}
+
+function getImageryIntent(collectionId, bands) {
+  const collection = String(collectionId || '').toUpperCase();
+  const normalizedBands = String(bands || '').toUpperCase().replace(/\s+/g, '');
+  const falseColor = normalizedBands.includes('B8') || normalizedBands.includes('B11') || normalizedBands.includes('SR_B5');
+  const prefersSentinelHub = collection.includes('COPERNICUS') || collection.includes('S2');
+  const prefersLandsat = collection.includes('LANDSAT') || collection.includes('LC08') || collection.includes('LC09');
+  return { falseColor, prefersSentinelHub, prefersLandsat };
+}
+
+function getConfiguredSatelliteProvider() {
+  const provider = String(BACKEND_SATELLITE_IMAGERY_PROVIDER || '').trim().toLowerCase();
+  if (provider === 'nasa-gibs') return 'nasa-gibs';
+  if (provider === 'sentinel-hub') return 'sentinel-hub';
+  if (provider === 'copernicus-dataspace') return 'copernicus-dataspace';
+  return null;
+}
+
+function getNasaGibsLayerCandidates(collectionId, bands) {
+  const id = String(collectionId || '').toUpperCase();
+  const normalizedBands = String(bands || '').toUpperCase().replace(/\s+/g, '');
+  const falseColor = normalizedBands.includes('B8') || normalizedBands.includes('B11') || normalizedBands.includes('SR_B5');
+
+  if (id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG' || id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG' || id === 'NASA/VIIRS/VNP46A1') {
+    return [
+      {
+        layer: 'VIIRS_SNPP_GapFilled_BRDF_Corrected_DayNightBand_Radiance',
+        note: id === 'NASA/VIIRS/VNP46A1'
+          ? 'NASA GIBS VIIRS gap-filled night radiance composite (VNP46A1-compatible mapping).'
+          : 'NASA GIBS VIIRS gap-filled night radiance composite.',
+        bandNote: id === 'NASA/VIIRS/VNP46A1'
+          ? 'Requested VNP46A1 night-lights band mapped to VIIRS gap-filled night-radiance imagery.'
+          : 'Requested radiance mapped to VIIRS gap-filled night-radiance imagery.',
+      },
+      {
+        layer: 'VIIRS_SNPP_DayNightBand_At_Sensor_Radiance',
+        note: 'NASA GIBS VIIRS Day/Night Band at-sensor radiance composite.',
+        bandNote: 'Fallback mapped to VIIRS Day/Night Band at-sensor radiance imagery.',
+      },
+      {
+        layer: 'VIIRS_Black_Marble',
+        note: 'NASA GIBS VIIRS Black Marble legacy annual composite.',
+        bandNote: 'Final fallback mapped to legacy Black Marble annual imagery (limited dates).',
+      },
+    ];
+  }
+
+  if (id === 'MODIS/061/MYD09GA') {
+    return [
+      {
+        layer: falseColor ? 'MODIS_Aqua_CorrectedReflectance_Bands721' : 'MODIS_Aqua_CorrectedReflectance_TrueColor',
+        note: falseColor ? 'NASA GIBS MODIS Aqua false-color composite.' : 'NASA GIBS MODIS Aqua true-color daily composite.',
+        bandNote: falseColor ? 'Requested false-color bands mapped to MODIS Aqua Bands 7-2-1.' : 'Requested bands mapped to NASA GIBS MODIS Aqua true-color imagery.',
+      },
+      {
+        layer: falseColor ? 'MODIS_Terra_CorrectedReflectance_Bands367' : 'MODIS_Terra_CorrectedReflectance_TrueColor',
+        note: falseColor ? 'NASA GIBS MODIS Terra false-color fallback composite.' : 'NASA GIBS MODIS Terra true-color fallback composite.',
+        bandNote: falseColor ? 'Fell back to MODIS Terra false-color layer.' : 'Fell back to MODIS Terra true-color layer.',
+      },
+    ];
+  }
+
+  if (id.startsWith('NOAA/GOES/16/')) {
+    return [
+      {
+        layer: 'GOES-East_ABI_GeoColor',
+        note: 'NASA GIBS GOES-East ABI GeoColor composite.',
+        bandNote: 'Requested GOES bands mapped to ABI GeoColor imagery.',
+      },
+    ];
+  }
+
+  if (id.startsWith('NOAA/GOES/17/') || id.startsWith('NOAA/GOES/18/')) {
+    return [
+      {
+        layer: 'GOES-West_ABI_GeoColor',
+        note: 'NASA GIBS GOES-West ABI GeoColor composite.',
+        bandNote: 'Requested GOES bands mapped to ABI GeoColor imagery.',
+      },
+    ];
+  }
+
+  if (id.startsWith('NOAA/VIIRS/')) {
+    return [
+      {
+        layer: falseColor ? 'VIIRS_SNPP_CorrectedReflectance_BandsM11-I2-I1' : 'VIIRS_SNPP_CorrectedReflectance_TrueColor',
+        note: falseColor ? 'NASA GIBS VIIRS SNPP false-color composite.' : 'NASA GIBS VIIRS SNPP true-color daily composite.',
+        bandNote: falseColor ? 'Requested bands mapped to VIIRS M11-I2-I1 false-color imagery.' : 'Requested bands mapped to VIIRS SNPP true-color imagery.',
+      },
+      {
+        layer: falseColor ? 'MODIS_Terra_CorrectedReflectance_Bands367' : 'MODIS_Terra_CorrectedReflectance_TrueColor',
+        note: falseColor ? 'NASA GIBS MODIS false-color fallback composite.' : 'NASA GIBS MODIS true-color fallback composite.',
+        bandNote: falseColor ? 'Fell back to MODIS false-color layer.' : 'Fell back to MODIS true-color layer.',
+      },
+    ];
+  }
+
+  return [
+    {
+      layer: falseColor ? 'MODIS_Terra_CorrectedReflectance_Bands367' : 'MODIS_Terra_CorrectedReflectance_TrueColor',
+      note: falseColor ? 'NASA GIBS MODIS false-color composite.' : 'NASA GIBS MODIS true-color daily composite.',
+      bandNote: falseColor ? 'Requested false-color bands mapped to MODIS Bands 3-6-7.' : 'Requested bands mapped to NASA GIBS true-color imagery.',
+    },
+  ];
+}
+
+function pickSatelliteSourceOrder(source, collectionId, bands) {
+  const requested = String(source || 'auto').toLowerCase();
+  const policy = getCollectionBackendPolicy(collectionId);
+  if (requested === 'basemap') return ['basemap'];
+  if (requested === 'nasa-gibs') return ['nasa-gibs', 'basemap'];
+  if (requested === 'sentinel-hub') return ['sentinel-hub', 'basemap'];
+  if (requested === 'copernicus-dataspace') return ['copernicus-dataspace', 'basemap'];
+
+  const autoOrder = [];
+  const configuredProvider = getConfiguredSatelliteProvider();
+  const canUseCopernicus = Boolean(COPERNICUS_DATASPACE_WMS_URL);
+  const canUseSentinel = Boolean(SENTINEL_HUB_WMS_URL);
+
+  if (configuredProvider === 'copernicus-dataspace' && canUseCopernicus) {
+    autoOrder.push('copernicus-dataspace');
+  }
+  if (configuredProvider === 'sentinel-hub' && canUseSentinel) {
+    autoOrder.push('sentinel-hub');
+  }
+  if (configuredProvider === 'nasa-gibs') {
+    autoOrder.push('nasa-gibs');
+  }
+
+  if (policy.preferredBackend === 'copernicus-dataspace') {
+    if (canUseCopernicus) autoOrder.push('copernicus-dataspace');
+    if (canUseSentinel) autoOrder.push('sentinel-hub');
+  } else if (policy.preferredBackend === 'sentinel-hub') {
+    if (canUseSentinel) autoOrder.push('sentinel-hub');
+    if (canUseCopernicus) autoOrder.push('copernicus-dataspace');
+  } else {
+    autoOrder.push(policy.preferredBackend);
+    if (canUseCopernicus) autoOrder.push('copernicus-dataspace');
+    if (canUseSentinel) autoOrder.push('sentinel-hub');
+  }
+
+  autoOrder.push('nasa-gibs');
+
+  autoOrder.push('basemap');
+  return [...new Set(autoOrder)];
+}
+
+function buildWmsPreviewUrl(baseUrl, { layer, rectangle, date, format = 'image/jpeg', width = SATELLITE_PREVIEW_IMAGE_SIZE, height = SATELLITE_PREVIEW_IMAGE_SIZE }) {
+  const url = new URL(baseUrl);
+  url.searchParams.set('SERVICE', 'WMS');
+  url.searchParams.set('REQUEST', 'GetMap');
+  url.searchParams.set('VERSION', '1.3.0');
+  url.searchParams.set('LAYERS', layer);
+  url.searchParams.set('STYLES', '');
+  url.searchParams.set('FORMAT', format);
+  url.searchParams.set('TRANSPARENT', 'false');
+  url.searchParams.set('WIDTH', String(width));
+  url.searchParams.set('HEIGHT', String(height));
+  url.searchParams.set('CRS', 'EPSG:4326');
+  url.searchParams.set('BBOX', `${rectangle.south},${rectangle.west},${rectangle.north},${rectangle.east}`);
+  if (date) {
+    url.searchParams.set('TIME', date);
+  }
+  return url.toString();
+}
+
+async function verifyPreviewUrl(url) {
+  const resp = await fetch(url, {
+    headers: HEADERS,
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!resp.ok) {
+    throw new Error(`preview fetch ${resp.status}`);
+  }
+  await resp.arrayBuffer();
+}
+
+async function buildNasaGibsPreview({ lat, lon, date, collectionId, bands }) {
+  const rectangle = computeImageryRectangle(lat, lon, 120);
+  const isoDate = normalizeIsoDate(date);
+  const candidates = getNasaGibsLayerCandidates(collectionId, bands);
+  const failures = [];
+
+  for (const candidate of candidates) {
+    try {
+      const previewUrl = buildWmsPreviewUrl(NASA_GIBS_WMS_URL, { layer: candidate.layer, rectangle, date: isoDate });
+      await verifyPreviewUrl(previewUrl);
+      return {
+        provider: 'nasa-gibs',
+        providerLabel: 'NASA GIBS',
+        previewUrl,
+        rectangle,
+        date: isoDate,
+        note: candidate.note,
+        bandNote: candidate.bandNote,
+      };
+    } catch (err) {
+      failures.push(`${candidate.layer}: ${err?.message ?? 'failed'}`);
+    }
+  }
+
+  throw new Error(`NASA GIBS preview failed for '${collectionId}'. ${failures.join(' | ')}`);
+}
+
+async function buildSentinelHubPreview({ lat, lon, date, collectionId, bands }) {
+  if (!SENTINEL_HUB_WMS_URL) {
+    throw new Error('Sentinel Hub is not configured on the server');
+  }
+  const rectangle = computeImageryRectangle(lat, lon, 60);
+  const isoDate = normalizeIsoDate(date);
+  const { falseColor } = getImageryIntent(collectionId, bands);
+  const layer = falseColor ? SENTINEL_HUB_FALSE_COLOR_LAYER : SENTINEL_HUB_TRUE_COLOR_LAYER;
+  const previewUrl = buildWmsPreviewUrl(SENTINEL_HUB_WMS_URL, { layer, rectangle, date: `${isoDate}/${isoDate}` });
+  await verifyPreviewUrl(previewUrl);
+  return {
+    provider: 'sentinel-hub',
+    providerLabel: 'Sentinel Hub',
+    previewUrl,
+    rectangle,
+    date: isoDate,
+    note: `Sentinel Hub WMS layer ${layer}.`,
+    bandNote: falseColor
+      ? 'Sentinel Hub false-color layer requested.'
+      : 'Sentinel Hub true-color layer requested.',
+  };
+}
+
+async function buildCopernicusDataspacePreview({ lat, lon, date, collectionId, bands }) {
+  if (!COPERNICUS_DATASPACE_WMS_URL) {
+    throw new Error('Copernicus Data Space is not configured on the server');
+  }
+  const rectangle = computeImageryRectangle(lat, lon, 60);
+  const isoDate = normalizeIsoDate(date);
+  const { falseColor } = getImageryIntent(collectionId, bands);
+  const layer = falseColor ? COPERNICUS_DATASPACE_FALSE_COLOR_LAYER : COPERNICUS_DATASPACE_TRUE_COLOR_LAYER;
+  const previewUrl = buildWmsPreviewUrl(COPERNICUS_DATASPACE_WMS_URL, { layer, rectangle, date: `${isoDate}/${isoDate}` });
+  await verifyPreviewUrl(previewUrl);
+  return {
+    provider: 'copernicus-dataspace',
+    providerLabel: 'Copernicus Data Space',
+    previewUrl,
+    rectangle,
+    date: isoDate,
+    note: `Copernicus Data Space WMS layer ${layer}.`,
+    bandNote: falseColor
+      ? 'Copernicus Data Space false-color layer requested.'
+      : 'Copernicus Data Space true-color layer requested.',
+  };
+}
+
+async function resolveSatelliteImageryPreview({ lat, lon, date, source, collectionId, bands }) {
+  const order = pickSatelliteSourceOrder(source, collectionId, bands);
+  const backendPolicy = getCollectionBackendPolicy(collectionId);
+  const failures = [];
+  for (const candidate of order) {
+    try {
+      if (candidate === 'copernicus-dataspace') {
+        const payload = await buildCopernicusDataspacePreview({ lat, lon, date, collectionId, bands });
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+      }
+      if (candidate === 'nasa-gibs') {
+        const payload = await buildNasaGibsPreview({ lat, lon, date, collectionId, bands });
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+      }
+      if (candidate === 'sentinel-hub') {
+        const payload = await buildSentinelHubPreview({ lat, lon, date, collectionId, bands });
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+      }
+      if (candidate === 'basemap') {
+        return {
+          provider: 'basemap',
+          providerLabel: 'Globe Basemap',
+          backendPolicy,
+          requestedSource: String(source || 'auto').toLowerCase(),
+          previewUrl: null,
+          rectangle: computeImageryRectangle(lat, lon, 90),
+          date: normalizeIsoDate(date),
+          note: 'Fell back to the existing globe basemap because no remote imagery provider responded.',
+          bandNote: 'Basemap fallback does not use the Collection/Bands inputs.',
+          fallbackCount: failures.length,
+          failures,
+        };
+      }
+    } catch (err) {
+      failures.push({ provider: candidate, message: err?.message ?? `${candidate} failed` });
+    }
+  }
+  throw new Error(failures.map(item => `${item.provider}: ${item.message}`).join(' | ') || 'No satellite imagery providers available');
+}
+
+function guessMimeByName(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
+  if (n.endsWith('.ts')) return 'video/mp2t';
+  if (n.endsWith('.m4s')) return 'video/iso.segment';
+  if (n.endsWith('.mp4')) return 'video/mp4';
+  return 'application/octet-stream';
+}
+
+async function ensureFfmpegAvailable() {
+  if (ffmpegChecked) return ffmpegAvailable;
+  ffmpegChecked = true;
+  ffmpegAvailable = await new Promise((resolve) => {
+    const p = spawn('ffmpeg', ['-version'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+  return ffmpegAvailable;
+}
+
+function startCameraStreamCleanupLoop() {
+  if (cameraStreamCleanupTimer) return;
+  cameraStreamCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, s] of cameraStreamSessions.entries()) {
+      if ((now - s.lastAccess) < CAMERA_STREAM_IDLE_MS) continue;
+      try { s.proc?.kill('SIGTERM'); } catch {}
+      try { fs.rmSync(s.dir, { recursive: true, force: true }); } catch {}
+      cameraStreamSessions.delete(id);
+    }
+  }, 30_000);
+  cameraStreamCleanupTimer.unref?.();
+}
+
+function cameraSessionIdForUrl(url) {
+  return crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+}
+
+function rewriteM3u8Playlist(playlistText, sourceUrl) {
+  return String(playlistText)
+    .split(/\r?\n/)
+    .map((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return line;
+      try {
+        const absolute = new URL(t, sourceUrl).toString();
+        return `/api/localproxy/api/cameras/stream?url=${encodeURIComponent(absolute)}`;
+      } catch {
+        return line;
+      }
+    })
+    .join('\n');
+}
+
+function ensureRtmpSession(sourceUrl) {
+  ensureCameraStreamDir();
+  startCameraStreamCleanupLoop();
+
+  const id = cameraSessionIdForUrl(sourceUrl);
+  const existing = cameraStreamSessions.get(id);
+  if (existing && existing.proc && !existing.proc.killed) {
+    existing.lastAccess = Date.now();
+    return existing;
+  }
+
+  const dir = path.join(CAMERA_STREAM_DIR, id);
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  fs.mkdirSync(dir, { recursive: true });
+
+  const playlistPath = path.join(dir, 'index.m3u8');
+  const ffArgs = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-i', sourceUrl,
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-f', 'hls',
+    '-hls_time', '2',
+    '-hls_list_size', '8',
+    '-hls_flags', 'delete_segments+append_list+omit_endlist',
+    playlistPath,
+  ];
+
+  const proc = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+  proc.stderr?.on('data', () => {});
+  proc.on('exit', () => {
+    const s = cameraStreamSessions.get(id);
+    if (s && s.proc === proc) s.proc = null;
+  });
+
+  const session = {
+    id,
+    url: sourceUrl,
+    dir,
+    playlistPath,
+    proc,
+    lastAccess: Date.now(),
+  };
+  cameraStreamSessions.set(id, session);
+  return session;
+}
+
+async function waitForPlaylist(playlistPath, timeoutMs = CAMERA_STREAM_BOOT_TIMEOUT_MS) {
+  const t0 = Date.now();
+  while ((Date.now() - t0) < timeoutMs) {
+    if (fs.existsSync(playlistPath)) {
+      try {
+        const st = fs.statSync(playlistPath);
+        if (st.size > 0) return true;
+      } catch {}
+    }
+    await sleep(250);
+  }
+  return false;
+}
+
+async function handleCameraStreamProxy(queryParams, res) {
+  const sourceUrl = queryParams.get('url') || '';
+  if (!sourceUrl) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing url query param' }));
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid source url' }));
+    return;
+  }
+
+  const protocol = parsed.protocol.replace(':', '').toLowerCase();
+
+  if (protocol === 'http' || protocol === 'https') {
+    const upstream = await fetch(sourceUrl, {
+      headers: HEADERS,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    if (!upstream.ok) {
+      res.writeHead(upstream.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `upstream ${upstream.status}` }));
+      return;
+    }
+
+    const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
+    const isM3u8 = contentType.includes('mpegurl') || /\.m3u8(\?|$)/i.test(sourceUrl);
+    if (isM3u8) {
+      const text = await upstream.text();
+      const rewritten = rewriteM3u8Playlist(text, sourceUrl);
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.apple.mpegurl',
+        'Cache-Control': 'no-store, max-age=0',
+      });
+      res.end(rewritten);
+      return;
+    }
+
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.writeHead(200, {
+      'Content-Type': contentType || guessMimeByName(parsed.pathname),
+      'Cache-Control': 'no-store, max-age=0',
+    });
+    res.end(body);
+    return;
+  }
+
+  if (protocol === 'rtmp' || protocol === 'rtsp' || protocol === 'mms') {
+    const hasFfmpeg = await ensureFfmpegAvailable();
+    if (!hasFfmpeg) {
+      res.writeHead(501, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ffmpeg not available on server for RTMP/RTSP conversion' }));
+      return;
+    }
+
+    const session = ensureRtmpSession(sourceUrl);
+    session.lastAccess = Date.now();
+    const ready = await waitForPlaylist(session.playlistPath);
+    if (!ready) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'transcoder warming up' }));
+      return;
+    }
+
+    const raw = fs.readFileSync(session.playlistPath, 'utf8');
+    const rewritten = raw
+      .split(/\r?\n/)
+      .map((line) => {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) return line;
+        return `/api/localproxy/api/cameras/hls/${session.id}/${encodeURIComponent(t)}`;
+      })
+      .join('\n');
+
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.apple.mpegurl',
+      'Cache-Control': 'no-store, max-age=0',
+    });
+    res.end(rewritten);
+    return;
+  }
+
+  res.writeHead(400, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: `unsupported protocol: ${protocol}` }));
+}
+
+async function handleCameraHlsSegment(urlPath, res) {
+  const m = urlPath.match(/^\/api\/cameras\/hls\/([^/]+)\/(.+)$/);
+  if (!m) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+
+  const [, sessionId, encodedFile] = m;
+  const session = cameraStreamSessions.get(sessionId);
+  if (!session) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'stream session expired' }));
+    return;
+  }
+  session.lastAccess = Date.now();
+
+  const fileName = decodeURIComponent(encodedFile || '');
+  if (!fileName || fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid segment path' }));
+    return;
+  }
+
+  const filePath = path.join(session.dir, fileName);
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'segment not found' }));
+    return;
+  }
+
+  const body = fs.readFileSync(filePath);
+  res.writeHead(200, {
+    'Content-Type': guessMimeByName(fileName),
+    'Cache-Control': 'no-store, max-age=0',
+  });
+  res.end(body);
+}
+
+async function handleCameraStreamHealth(res) {
+  const hasFfmpeg = await ensureFfmpegAvailable();
+  const now = Date.now();
+  const activeSessions = [...cameraStreamSessions.values()].map((s) => ({
+    id: s.id,
+    protocol: (() => {
+      try { return new URL(s.url).protocol.replace(':', ''); } catch { return 'unknown'; }
+    })(),
+    alive: !!(s.proc && !s.proc.killed),
+    idleMs: Math.max(0, now - (s.lastAccess || now)),
+  }));
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    ffmpegAvailable: hasFfmpeg,
+    activeSessionCount: activeSessions.length,
+    activeSessions,
+    ts: now,
+  }));
 }
 
 function tileCachePaths(cacheKey) {
@@ -307,6 +1178,7 @@ function scheduleCacheWrite() {
         ts: Date.now(),
         flights: [...flightSnapshotCache.entries()].slice(0, 64),
         traffic: [...trafficSnapshotCache.entries()].slice(0, 64),
+        marine: [...marineSnapshotCache.entries()].slice(0, 64),
         satellites: satSnapshotCache,
       };
       fs.writeFileSync(CACHE_FILE, JSON.stringify(out));
@@ -329,6 +1201,11 @@ function loadSnapshotCacheFromDisk() {
     for (const [key, value] of data.traffic ?? []) {
       if (value?.payload && Number.isFinite(value?.ts)) {
         trafficSnapshotCache.set(key, value);
+      }
+    }
+    for (const [key, value] of data.marine ?? []) {
+      if (value?.payload && Number.isFinite(value?.ts)) {
+        marineSnapshotCache.set(key, value);
       }
     }
     if (data?.satellites?.payload && Number.isFinite(data?.satellites?.ts)) {
@@ -876,6 +1753,9 @@ function classifySatelliteApplication(upperName) {
   const astronomical = ['HUBBLE', 'JWST', 'JAMES WEBB', 'CHANDRA', 'XMM', 'FERMI', 'TESS', 'KEPLER', 'GAIA', 'EUCLID', 'ASTRO'];
   if (astronomical.some(k => upperName.includes(k))) return 'Astronomical';
 
+  const weather = ['NOAA', 'METEOR', 'METOP', 'GOES', 'HIMAWARI', 'WEATHER'];
+  if (weather.some(k => upperName.includes(k))) return 'Weather';
+
   const navigation = ['GPS', 'NAVSTAR', 'GLONASS', 'GALILEO', 'BEIDOU', 'QZSS', 'IRNSS', 'NAVIC', 'EGNOS', 'WAAS'];
   if (navigation.some(k => upperName.includes(k))) return 'Navigation';
 
@@ -918,6 +1798,7 @@ function classifySatelliteOrbitType(line2 = '') {
 function deriveSatelliteMeta(name, line2) {
   const upperName = String(name ?? '').toUpperCase();
   return {
+    rawName: name ?? '',
     isMilitary: classifySatelliteMilitaryStatus(upperName),
     application: classifySatelliteApplication(upperName),
     crewedStatus: classifySatelliteCrewedStatus(upperName),
@@ -926,14 +1807,21 @@ function deriveSatelliteMeta(name, line2) {
 }
 
 function categoryForSatelliteMeta(meta) {
+  const rawName = String(meta?.rawName ?? '').toUpperCase();
+  if (/\bDEB\b|DEBRIS|FRAGMENT/.test(rawName)) return 'debris';
+  if (/\bR\/B\b|ROCKET BODY|UPPER STAGE|FREGAT|BREEZE-M|CENTAUR|DELTA\s+STAGE/.test(rawName)) return 'rocket';
   if (meta?.isMilitary) return 'military';
-  if ((meta?.crewedStatus ?? '').toLowerCase() === 'crewed') return 'crewed';
+
   const app = (meta?.application ?? 'unknown').toLowerCase();
-  if (app === 'earth observation') return 'earthobservation';
-  if (app === 'communication') return 'communication';
+  if (app === 'weather' || /NOAA|METEOR|GOES|HIMAWARI|METOP|WEATHER/.test(rawName)) return 'weather';
+  if (app === 'earth observation') return 'earth_observation';
+  if (app === 'communication') {
+    if (/STARLINK|ONEWEB|KUIPER|O3B|TDRS|SATCOM/.test(rawName)) return 'internet';
+    return 'communications';
+  }
   if (app === 'navigation') return 'navigation';
-  if (app === 'astronomical') return 'astronomical';
-  return 'unknown';
+  if (app === 'astronomical' || (meta?.crewedStatus ?? '').toLowerCase() === 'crewed') return 'scientific';
+  return 'other';
 }
 
 async function ensureSatelliteCatalog() {
@@ -1164,6 +2052,218 @@ async function getTrafficPayload(bounds) {
   return payload;
 }
 
+function overpassMarineQuery(bounds) {
+  if (!Array.isArray(bounds) || bounds.length !== 4) return null;
+  const [minLon, minLat, maxLon, maxLat] = bounds;
+  return `
+    [out:json][timeout:20];
+    (
+      node["seamark:type"~"^(light_vessel|tanker|cargo|passenger|fishing_vessel|fishing|pilot_station|tug)$"](${minLat},${minLon},${maxLat},${maxLon});
+      way["seamark:type"~"^(light_vessel|tanker|cargo|passenger|fishing_vessel|fishing|pilot_station|tug)$"](${minLat},${minLon},${maxLat},${maxLon});
+      relation["seamark:type"~"^(light_vessel|tanker|cargo|passenger|fishing_vessel|fishing|pilot_station|tug)$"](${minLat},${minLon},${maxLat},${maxLon});
+      node["ship:type"](${minLat},${minLon},${maxLat},${maxLon});
+      way["ship:type"](${minLat},${minLon},${maxLat},${maxLon});
+      relation["ship:type"](${minLat},${minLon},${maxLat},${maxLon});
+    );
+    out center tags;
+  `;
+}
+
+function normalizeLon180(lon) {
+  return ((((lon + 180) % 360) + 360) % 360) - 180;
+}
+
+function vesselTypeFromTags(tags = {}) {
+  const type = String(tags['ship:type'] ?? tags['seamark:type'] ?? tags.ship ?? '').toLowerCase();
+  if (type.includes('tanker')) return 'tanker';
+  if (type.includes('cargo')) return 'cargo';
+  if (type.includes('passenger')) return 'passenger';
+  if (type.includes('fishing')) return 'fishing';
+  return type || 'other';
+}
+
+function buildTrackPoints(lat, lon, headingDeg = 0, speedKnots = 10, steps = 6) {
+  const points = [];
+  const headingRad = (Number(headingDeg) || 0) * (Math.PI / 180);
+  const speedMps = (Number(speedKnots) || 0) * 0.514444;
+  const stepSeconds = 60;
+  for (let i = steps - 1; i >= 0; i -= 1) {
+    const distanceMeters = speedMps * stepSeconds * i;
+    const dLat = (Math.cos(headingRad) * distanceMeters) / 111320;
+    const dLon = (Math.sin(headingRad) * distanceMeters) / (111320 * Math.max(Math.cos((lat * Math.PI) / 180), 0.2));
+    points.push({ lat: lat - dLat, lon: normalizeLon180(lon - dLon) });
+  }
+  points.push({ lat, lon: normalizeLon180(lon) });
+  return points;
+}
+
+function parseOverpassVessels(payload) {
+  const out = [];
+  for (const element of payload?.elements ?? []) {
+    const lat = Number.isFinite(element?.lat) ? element.lat : element?.center?.lat;
+    const lon = Number.isFinite(element?.lon) ? element.lon : element?.center?.lon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const tags = element?.tags ?? {};
+    const type = vesselTypeFromTags(tags);
+    const heading = Number.parseFloat(tags.heading ?? tags.course ?? tags['seamark:radio_station:category']);
+    const speed = Number.parseFloat(tags.speed ?? tags.knots ?? tags['seamark:notice:speed_limit']);
+
+    out.push({
+      id: `${element.type ?? 'obj'}-${element.id}`,
+      lat,
+      lon: normalizeLon180(lon),
+      name: tags.name || tags.ref || tags['seamark:name'] || `Vessel ${element.id}`,
+      type,
+      speed: Number.isFinite(speed) ? speed : null,
+      heading: Number.isFinite(heading) ? heading : null,
+      simulated: false,
+      tags,
+      track: buildTrackPoints(lat, normalizeLon180(lon), Number.isFinite(heading) ? heading : 0, Number.isFinite(speed) ? speed : 8),
+    });
+  }
+  return out;
+}
+
+function parseAisNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseAisVessels(payload) {
+  const candidates = Array.isArray(payload)
+    ? payload
+    : (Array.isArray(payload?.vessels) ? payload.vessels
+      : Array.isArray(payload?.positions) ? payload.positions
+        : Array.isArray(payload?.data) ? payload.data
+          : []);
+
+  const out = [];
+  for (const row of candidates) {
+    const lat = parseAisNumber(row?.lat ?? row?.latitude ?? row?.LAT ?? row?.Latitude);
+    const lon = parseAisNumber(row?.lon ?? row?.lng ?? row?.longitude ?? row?.LON ?? row?.Longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const heading = parseAisNumber(row?.heading ?? row?.cog ?? row?.course ?? row?.COG);
+    const speed = parseAisNumber(row?.speed ?? row?.sog ?? row?.SOG ?? row?.speed_knots);
+    const idRaw = row?.id ?? row?.mmsi ?? row?.MMSI ?? row?.imo ?? row?.IMO ?? row?.uuid;
+    const id = idRaw ? `ais-${String(idRaw)}` : `ais-${lat.toFixed(6)}-${lon.toFixed(6)}`;
+    const shipType = String(row?.type ?? row?.shipType ?? row?.ship_type ?? row?.vesselType ?? row?.vessel_type ?? '').toLowerCase();
+    const name = row?.name ?? row?.vesselName ?? row?.ship_name ?? row?.SHIPNAME ?? row?.callsign ?? `AIS ${String(idRaw ?? out.length + 1)}`;
+
+    out.push({
+      id,
+      lat,
+      lon: normalizeLon180(lon),
+      name: String(name),
+      type: shipType || 'other',
+      speed: Number.isFinite(speed) ? speed : null,
+      heading: Number.isFinite(heading) ? heading : null,
+      simulated: false,
+      tags: {
+        ship: shipType || 'other',
+        mmsi: row?.mmsi ?? row?.MMSI ?? null,
+        imo: row?.imo ?? row?.IMO ?? null,
+      },
+      track: buildTrackPoints(lat, normalizeLon180(lon), Number.isFinite(heading) ? heading : 0, Number.isFinite(speed) ? speed : 8),
+    });
+  }
+
+  return out;
+}
+
+function buildAisProxyUrl(bounds) {
+  if (!AIS_PROXY_URL) return '';
+  const [minLon, minLat, maxLon, maxLat] = bounds;
+  const url = new URL(AIS_PROXY_URL);
+  if (!url.searchParams.has('minLon')) url.searchParams.set('minLon', `${minLon}`);
+  if (!url.searchParams.has('minLat')) url.searchParams.set('minLat', `${minLat}`);
+  if (!url.searchParams.has('maxLon')) url.searchParams.set('maxLon', `${maxLon}`);
+  if (!url.searchParams.has('maxLat')) url.searchParams.set('maxLat', `${maxLat}`);
+  return url.toString();
+}
+
+async function fetchAisVessels(bounds) {
+  if (!AIS_PROXY_URL) return [];
+  const url = buildAisProxyUrl(bounds);
+  const headers = { ...HEADERS };
+  if (AIS_PROXY_KEY) {
+    headers['Authorization'] = `Bearer ${AIS_PROXY_KEY}`;
+    headers['X-Api-Key'] = AIS_PROXY_KEY;
+  }
+
+  const resp = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) {
+    throw new Error(`AIS ${resp.status}`);
+  }
+  const payload = await resp.json();
+  return parseAisVessels(payload);
+}
+
+async function getMarinePayload(bounds) {
+  const b = normalizeBounds(bounds);
+  if (!b) {
+    return { vessels: [], total: 0, ts: Date.now(), source: 'marine-server', mode: 'bounds-required' };
+  }
+
+  const cacheKey = boundsCacheKey(b, 'marine-global');
+  const cached = marineSnapshotCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && (now - cached.ts) < MARINE_SNAPSHOT_TTL_MS) {
+    return { ...cached.payload, cacheHit: true };
+  }
+
+  let vessels = [];
+  let source = 'marine-live-empty';
+  const errors = [];
+
+  const providerOrder = (() => {
+    if (BACKEND_MARINE_PROVIDER === 'ais') return ['ais'];
+    if (BACKEND_MARINE_PROVIDER === 'overpass') return ['overpass'];
+    // auto: prefer AIS when configured, otherwise Overpass.
+    return AIS_PROXY_URL ? ['ais', 'overpass'] : ['overpass'];
+  })();
+
+  for (const provider of providerOrder) {
+    try {
+      if (provider === 'ais') {
+        vessels = await fetchAisVessels(b);
+        source = 'ais-live-server';
+      } else {
+        const query = overpassMarineQuery(b);
+        const response = await fetchOverpassJson(query, 22_000);
+        vessels = parseOverpassVessels(response);
+        source = 'osm-overpass-server';
+      }
+
+      if (vessels.length > 0) break;
+    } catch (error) {
+      errors.push(`${provider}:${error?.message ?? 'unknown'}`);
+    }
+  }
+
+  if (!vessels.length && errors.length > 0) {
+    console.warn(`[proxy] Marine live fetch failed (${providerOrder.join(' -> ')}): ${errors.join(' | ')}`);
+  }
+
+  const generatedAt = Date.now();
+  const payload = {
+    vessels,
+    total: vessels.length,
+    ts: generatedAt,
+    source,
+    cacheKey,
+    cacheHit: false,
+  };
+  marineSnapshotCache.set(cacheKey, { ts: generatedAt, payload });
+  scheduleCacheWrite();
+  return payload;
+}
+
 async function fetchJson(url, timeoutMs = 20_000) {
   const resp = await fetch(url, {
     headers: HEADERS,
@@ -1204,6 +2304,42 @@ function toIsoString(value) {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
+
+const COLLECTION_BACKEND_CAPABILITIES = {
+  'COPERNICUS/S2_SR_HARMONIZED': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S2_HARMONIZED': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S1_GRD': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S3/OLCI': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_NO2': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_CO': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_SO2': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_CH4': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_AER_AI': ['copernicus-dataspace', 'sentinel-hub'],
+  'LANDSAT/LC09/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC08/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LE07/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LT05/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC09/C02/T1_TOA': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC08/C02/T1_TOA': ['nasa-gibs', 'copernicus-dataspace'],
+  'MODIS/061/MOD09GA': ['nasa-gibs'],
+  'MODIS/061/MYD09GA': ['nasa-gibs'],
+  'MODIS/061/MOD09GQ': ['nasa-gibs'],
+  'MODIS/061/MOD13Q1': ['nasa-gibs'],
+  'MODIS/061/MOD11A2': ['nasa-gibs'],
+  'MODIS/061/MOD14A1': ['nasa-gibs'],
+  'MODIS/061/MOD10A1': ['nasa-gibs'],
+  'MODIS/061/MCD43A4': ['nasa-gibs'],
+  'NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG': ['nasa-gibs'],
+  'NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG': ['nasa-gibs'],
+  'NASA/VIIRS/VNP46A1': ['nasa-gibs'],
+  'NOAA/VIIRS/001/VNP09GA': ['nasa-gibs'],
+  'NOAA/VIIRS/001/VNP13A1': ['nasa-gibs'],
+  'NOAA/GOES/16/MCMIPF': ['nasa-gibs'],
+  'NOAA/GOES/17/MCMIPF': ['nasa-gibs'],
+  'NOAA/GOES/18/MCMIPF': ['nasa-gibs'],
+  'ASTER/AST_L1T_003': ['nasa-gibs'],
+  'NASA/ASTER_GED/AG100_003': ['nasa-gibs'],
+};
 
 function stripClosedRing(points) {
   if (points.length < 2) return points;
@@ -2077,6 +3213,27 @@ const server = http.createServer(async (req, res) => {
 
   if (url === '/api/flights') {
     await handleFlights(query, res);
+  } else if (url === '/api/cameras/stream/health') {
+    try {
+      await handleCameraStreamHealth(res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera stream health failed' }));
+    }
+  } else if (url === '/api/cameras/stream') {
+    try {
+      await handleCameraStreamProxy(queryParams, res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera stream proxy failed' }));
+    }
+  } else if (url.startsWith('/api/cameras/hls/')) {
+    try {
+      await handleCameraHlsSegment(url, res);
+    } catch (err) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message ?? 'camera hls segment failed' }));
+    }
   } else if (url === '/api/nofly_gps') {
     try {
       const parts = (query.bounds ?? '').split(',').map(Number);
@@ -2125,6 +3282,74 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'traffic request failed' }));
     }
+  } else if (url === '/api/marine/snapshot') {
+    const parts = (query.bounds ?? '').split(',').map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isFinite(n))) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'bounds must be minLon,minLat,maxLon,maxLat' }));
+      return;
+    }
+    try {
+      const payload = await getMarinePayload(parts);
+      res.writeHead(200);
+      res.end(JSON.stringify(payload));
+    } catch (err) {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: err?.message ?? 'marine snapshot failed' }));
+    }
+  } else if (url === '/api/satellite-imagery/health') {
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      copernicusDataspaceConfigured: Boolean(COPERNICUS_DATASPACE_WMS_URL),
+      sentinelHubConfigured: Boolean(SENTINEL_HUB_WMS_URL),
+    }));
+  } else if (url === '/api/satellite-imagery/preview') {
+    const lat = Number(query.lat);
+    const lon = Number(query.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'lat and lon are required numeric query params' }));
+      return;
+    }
+
+    const validation = validateSatelliteImageryRequest({
+      lat,
+      lon,
+      date: String(query.date ?? ''),
+      source: String(query.source ?? 'auto'),
+      collectionId: String(query.collection ?? ''),
+      bands: String(query.bands ?? ''),
+    });
+    if (!validation.ok) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: validation.error }));
+      return;
+    }
+
+    const request = validation.value;
+    try {
+      const payload = await resolveSatelliteImageryPreview({
+        lat: request.lat,
+        lon: request.lon,
+        date: request.date,
+        source: request.source,
+        collectionId: request.collectionId,
+        bands: request.bands,
+      });
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        ...payload,
+        location: { lat: request.lat, lon: request.lon },
+        request,
+        copernicusDataspaceConfigured: Boolean(COPERNICUS_DATASPACE_WMS_URL),
+        sentinelHubConfigured: Boolean(SENTINEL_HUB_WMS_URL),
+      }));
+    } catch (err) {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: err?.message ?? 'satellite imagery preview failed' }));
+    }
   } else if (url === '/api/satellites/snapshot') {
     const rawMax = parseInt(query.max ?? '0', 10);
     // 0 or missing → no limit (full catalog); otherwise honour the requested count
@@ -2161,7 +3386,7 @@ const server = http.createServer(async (req, res) => {
   } else if (url === '/api/world/snapshot') {
     const parts = (query.bounds ?? '').split(',').map(Number);
     const bounds = (parts.length === 4 && parts.every(n => Number.isFinite(n))) ? parts : null;
-    const include = new Set((query.include ?? 'flights,satellites,traffic,cameras').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+    const include = new Set((query.include ?? 'flights,satellites,traffic,marine,cameras').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
     const maxSat = Math.max(parseInt(query.satMax ?? '0', 10) || 0, 0) || Infinity;
     const satPerCategory = Math.max(parseInt(query.satPerCategory ?? `${SATELLITE_MAX_PER_CATEGORY}`, 10) || SATELLITE_MAX_PER_CATEGORY, 1);
     const satCategories = String(query.satCategories ?? '')
@@ -2184,20 +3409,25 @@ const server = http.createServer(async (req, res) => {
       const trafficPromise = (include.has('traffic') && bounds)
         ? getTrafficPayload(bounds)
         : null;
+      const marinePromise = (include.has('marine') && bounds)
+        ? getMarinePayload(bounds)
+        : null;
       const camerasPromise = (include.has('cameras') && bounds)
         ? getCameraSnapshot(bounds, maxCam)
         : null;
 
-      const [flightsPayload, satellitesPayload, trafficPayload, camerasPayload] = await Promise.all([
+      const [flightsPayload, satellitesPayload, trafficPayload, marinePayload, camerasPayload] = await Promise.all([
         flightsPromise,
         satellitesPromise,
         trafficPromise,
+        marinePromise,
         camerasPromise,
       ]);
 
       if (flightsPayload) payload.flights = flightsPayload;
       if (satellitesPayload) payload.satellites = satellitesPayload;
       if (trafficPayload) payload.traffic = trafficPayload;
+      if (marinePayload) payload.marine = marinePayload;
       if (camerasPayload) payload.cameras = camerasPayload;
 
       payload.diagnostics = {
@@ -2205,12 +3435,14 @@ const server = http.createServer(async (req, res) => {
           flights: payload.flights?.source ?? null,
           satellites: payload.satellites?.source ?? null,
           traffic: payload.traffic?.source ?? null,
+          marine: payload.marine?.source ?? null,
           cameras: payload.cameras?.source ?? null,
         },
         cache: {
           flights: payload.flights?.cacheHit ?? null,
           satellites: payload.satellites?.cacheHit ?? null,
           traffic: payload.traffic?.cacheHit ?? null,
+          marine: payload.marine?.cacheHit ?? null,
           cameras: payload.cameras?.cacheHit ?? null,
         },
       };
@@ -2233,6 +3465,7 @@ const server = http.createServer(async (req, res) => {
       cache: {
         flights: flightSnapshotCache.size,
         traffic: trafficSnapshotCache.size,
+        marine: marineSnapshotCache.size,
         sat_points: satSnapshotCache.points?.length ?? 0,
         camera_tiles: cameraTileCache.size,
         camera_snapshots: cameraSnapshotCache.size,
@@ -2253,7 +3486,7 @@ server.listen(PORT, () => {
   ensureTileCacheDir();
   loadSnapshotCacheFromDisk();
   console.log(`[proxy] Mode: ${SERVER_HEAVY_MODE ? 'heavy' : 'normal'}`);
-  console.log(`[proxy] Providers: flights=${BACKEND_FLIGHT_PROVIDER}, satellites=${BACKEND_SATELLITE_PROVIDER}`);
+  console.log(`[proxy] Providers: flights=${BACKEND_FLIGHT_PROVIDER}, satellites=${BACKEND_SATELLITE_PROVIDER}, satelliteImagery=${BACKEND_SATELLITE_IMAGERY_PROVIDER || 'auto'}`);
   console.log(`[proxy] ShadowGrid → http://localhost:${PORT}/api/flights?bounds=minLon,minLat,maxLon,maxLat`);
   ensureSatelliteCatalog()
     .then(() => {

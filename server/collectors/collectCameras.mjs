@@ -1,18 +1,23 @@
 /**
  * server/collectors/collectCameras.mjs
  *
- * Downloads all public camera-data JSON files from their source feeds,
- * normalises them to a compact schema, and writes:
+ * Downloads camera data and writes:
  *
- *   public/camera-data/cameras.json        — full normalised array (~135 k entries)
- *   public/camera-data/cameras-lite.json  — compact array (id,a,o,u,t,s) for tile rendering
+ *   public/camera-data/cameras.json        — full normalised array
+ *   public/camera-data/cameras-lite.json  — compact array (id,a,o,u,x,t,s,y,z,d,k,m)
  *   public/camera-data/cameras-globe.json — minimal [lat,lng,typeIdx] tuples for globe coverage
  *   public/camera-data/meta.json          — source stats + timestamp
  *
+ * Modes:
+ *   osm (default) — OpenStreetMap surveillance objects via Overpass, manufacturer filtered
+ *   trafficvision — Legacy feed mode from trafficvision.live sources
+ *   both — Fetch both trafficvision feeds and OSM objects, deduplicated
+ *
  * Usage:
  *   node server/collectors/collectCameras.mjs
- *   node server/collectors/collectCameras.mjs --sources wsdot,511ny   (subset)
- *   node server/collectors/collectCameras.mjs --concurrency 20
+ *   node server/collectors/collectCameras.mjs --mode=trafficvision --sources=wsdot,511ny
+ *   node server/collectors/collectCameras.mjs --mode=both
+ *   node server/collectors/collectCameras.mjs --osm-manufacturer="Flock Safety"
  */
 
 import fs   from 'fs';
@@ -245,8 +250,14 @@ const args = Object.fromEntries(
     .map(a => { const [k, v] = a.slice(2).split('='); return [k, v ?? true]; })
 );
 const CONCURRENCY   = parseInt(args.concurrency ?? '12');
-const SUBSET        = args.sources ? args.sources.split(',') : null;
+const SUBSET        = args.sources ? String(args.sources).split(',') : null;
 const SKIP_EXISTING = args['skip-existing'] === true;
+const MODE          = String(args.mode ?? 'osm').toLowerCase();
+const OSM_MANUFACTURER = args['osm-manufacturer'] === true ? 'Flock Safety' : (args['osm-manufacturer'] ? String(args['osm-manufacturer']) : 'Flock Safety');
+const OSM_INCLUDE_ALL_SURVEILLANCE = String(args['osm-all'] ?? 'false').toLowerCase() === 'true';
+const OSM_TIMEOUT_MS = parseInt(args['osm-timeout-ms'] ?? '90000', 10);
+const OSM_ENDPOINT_RETRIES = parseInt(args['osm-endpoint-retries'] ?? '2', 10);
+const OSM_MAX_SPLIT_DEPTH = parseInt(args['osm-max-split-depth'] ?? '2', 10);
 
 const sources = SUBSET
   ? SOURCES.filter(s => SUBSET.includes(s.source))
@@ -258,21 +269,116 @@ function pickUrl(cameras) {
   return cameras;
 }
 
+function parseDirection(value) {
+  if (value == null) return null;
+  const raw = String(value).trim().toUpperCase();
+  if (!raw) return null;
+  const compass = {
+    N: 0,
+    NE: 45,
+    E: 90,
+    SE: 135,
+    S: 180,
+    SW: 225,
+    W: 270,
+    NW: 315,
+  };
+  if (raw in compass) return compass[raw];
+  const parsed = parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = parseFloat(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTimeoutError(err) {
+  const msg = String(err?.message ?? '').toLowerCase();
+  return err?.name === 'TimeoutError' || err?.name === 'AbortError' || msg.includes('aborted due to timeout');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function splitRegionBox(region) {
+  const midLat = (region.minLat + region.maxLat) / 2;
+  const midLng = (region.minLng + region.maxLng) / 2;
+  return [
+    { minLat: region.minLat, minLng: region.minLng, maxLat: midLat, maxLng: midLng },
+    { minLat: region.minLat, minLng: midLng, maxLat: midLat, maxLng: region.maxLng },
+    { minLat: midLat, minLng: region.minLng, maxLat: region.maxLat, maxLng: midLng },
+    { minLat: midLat, minLng: midLng, maxLat: region.maxLat, maxLng: region.maxLng },
+  ];
+}
+
+function buildOverpassQuery(region, timeoutSec) {
+  return `[out:json][timeout:${timeoutSec}];(node["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});way["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng});relation["man_made"="surveillance"](${region.minLat},${region.minLng},${region.maxLat},${region.maxLng}););out center tags;`;
+}
+
+function endpointName(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+async function fetchOverpassRegion(region, endpoints, timeoutMs, endpointRetries, onAttempt = null) {
+  const timeoutSec = Math.max(30, Math.ceil(timeoutMs / 1000));
+  const q = buildOverpassQuery(region, timeoutSec);
+  let lastError = null;
+
+  for (const endpoint of endpoints) {
+    for (let attempt = 1; attempt <= endpointRetries; attempt++) {
+      try {
+        if (onAttempt) onAttempt({ endpoint, attempt, endpointRetries });
+        const body = new URLSearchParams({ data: q });
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          body,
+          headers: {
+            'User-Agent': 'ShadowGrid-Collector/1.0',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json,text/plain,*/*',
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!Array.isArray(data?.elements)) throw new Error('Invalid Overpass payload');
+        return data;
+      } catch (err) {
+        lastError = err;
+        if (attempt < endpointRetries) {
+          await sleep(250 * attempt);
+          continue;
+        }
+      }
+    }
+  }
+
+  throw lastError ?? new Error('No Overpass response');
+}
+
 /** Normalise a raw camera record to our schema */
 function normalise(raw, sourceName) {
   const lat = raw.lat ?? raw.latitude ?? null;
   const lng = raw.lng ?? raw.longitude ?? null;
   if (lat == null || lng == null) return null;
 
-  // Prefer image for static snapshot, fall back to video
-  const imageUrl = raw.imageUrl ?? null;
-  const videoUrl = raw.videoUrl ?? null;
+  // Try multiple field names for URLs (trafficvision and others use different schemas)
+  const imageUrl = raw.imageUrl ?? raw.image ?? raw.image_url ?? raw.snapshot_url ?? raw.still ?? null;
+  const videoUrl = raw.videoUrl ?? raw.video ?? raw.video_url ?? raw.stream_url ?? raw.m3u8 ?? raw.hls ?? null;
+  
   if (!imageUrl && !videoUrl) return null;
 
   return {
     id:       raw.id,
     source:   raw.source || sourceName,
-    feedType: raw.feedType || (videoUrl ? 'video' : 'image'),
+    feedType: raw.feedType || (imageUrl && videoUrl ? 'hybrid' : videoUrl ? 'video' : 'image'),
     lat:      parseFloat(lat),
     lng:      parseFloat(lng),
     imageUrl,
@@ -281,6 +387,11 @@ function normalise(raw, sourceName) {
     country:  raw.country  || '',
     state:    raw.state    || '',
     city:     raw.city     || '',
+    // Sunders enrichment fields (populated by enrichment process)
+    sundersType: raw.sundersType || null,
+    sundersOperator: raw.sundersOperator || null,
+    sundersDirection: raw.sundersDirection || null,
+    sundersHeight: raw.sundersHeight || null,
   };
 }
 
@@ -320,6 +431,144 @@ async function fetchSource(s, idx, total) {
   }
 }
 
+/** Fetch OSM surveillance objects directly from Overpass (no sunders dependency). */
+async function fetchOsmSurveillanceCameras() {
+  const OVERPASS_ENDPOINTS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ];
+
+  const manufacturerNeedle = OSM_MANUFACTURER.trim().toLowerCase();
+  const regions = [
+    { name: 'USA Northeast', minLat: 40, maxLat: 45, minLng: -74, maxLng: -71 },
+    { name: 'USA California', minLat: 37, maxLat: 38, minLng: -122, maxLng: -120 },
+    { name: 'USA Texas', minLat: 29, maxLat: 34, minLng: -103, maxLng: -94 },
+    { name: 'UK London', minLat: 51.3, maxLat: 51.7, minLng: -0.5, maxLng: 0.2 },
+    { name: 'Germany Berlin', minLat: 52.3, maxLat: 52.7, minLng: 13.1, maxLng: 13.8 },
+  ];
+
+  const cameras = [];
+  const byId = new Set();
+  let totalFetched = 0;
+
+  console.log(`\n  Fetching OSM surveillance objects from Overpass...`);
+  console.log(`    Manufacturer filter: ${OSM_INCLUDE_ALL_SURVEILLANCE ? 'disabled (--osm-all=true)' : OSM_MANUFACTURER}`);
+
+  for (const rootRegion of regions) {
+    const queue = [{ ...rootRegion, depth: 0, label: rootRegion.name }];
+    let regionFetched = 0;
+    let regionAccepted = 0;
+    let regionSplitCount = 0;
+    let regionFailedCount = 0;
+
+    while (queue.length) {
+      const region = queue.shift();
+      let data = null;
+      let lastError = null;
+      console.log(`      ${region.label}: querying depth=${region.depth} bbox=${region.minLat},${region.minLng},${region.maxLat},${region.maxLng}`);
+
+      try {
+        data = await fetchOverpassRegion(
+          region,
+          OVERPASS_ENDPOINTS,
+          OSM_TIMEOUT_MS,
+          OSM_ENDPOINT_RETRIES,
+          ({ endpoint, attempt, endpointRetries }) => {
+            console.log(`        ${region.label}: attempt ${attempt}/${endpointRetries} via ${endpointName(endpoint)}`);
+          },
+        );
+      } catch (err) {
+        lastError = err;
+      }
+
+      if (!data || !Array.isArray(data.elements)) {
+        if (isTimeoutError(lastError) && region.depth < OSM_MAX_SPLIT_DEPTH) {
+          console.log(`        ${region.label}: timeout, splitting into 4 sub-regions`);
+          const parts = splitRegionBox(region).map((part, idx) => ({
+            ...part,
+            depth: region.depth + 1,
+            label: `${region.label}.${idx + 1}`,
+          }));
+          queue.push(...parts);
+          regionSplitCount += 1;
+          continue;
+        }
+
+        regionFailedCount += 1;
+        console.log(`        ${region.label}: failed - ${lastError?.message || 'No Overpass response'}`);
+        continue;
+      }
+
+      const elements = data.elements;
+      totalFetched += elements.length;
+      regionFetched += elements.length;
+
+      for (const el of elements) {
+      const lat = Number(el.lat ?? el.center?.lat);
+      const lng = Number(el.lon ?? el.center?.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+      const tags = el.tags || {};
+      const manufacturer = String(tags.manufacturer || '').trim();
+      const hasMfgMatch = manufacturerNeedle.length === 0 || manufacturer.toLowerCase().includes(manufacturerNeedle);
+      if (!OSM_INCLUDE_ALL_SURVEILLANCE && !hasMfgMatch) continue;
+
+      const osmType = el.type || 'node';
+      const osmId = `${osmType}-${el.id}`;
+      if (byId.has(osmId)) continue;
+      byId.add(osmId);
+
+      const direction = parseDirection(tags['camera:direction'] ?? tags.direction);
+      const height = parseNumber(tags.height);
+      const angle = parseNumber(tags['camera:angle']);
+      const version = parseInt(String(el.version ?? ''), 10);
+
+      cameras.push({
+        id: `osm-${osmId}`,
+        source: 'osm',
+        feedType: 'image',
+        lat,
+        lng,
+        imageUrl: null,
+        videoUrl: null,
+        location: tags.name || tags.operator || manufacturer || 'OSM Surveillance Camera',
+        country: '',
+        state: '',
+        city: '',
+        sundersType: tags['camera:type'] || tags['surveillance:type'] || null,
+        sundersOperator: tags.operator || null,
+        sundersDirection: Number.isFinite(direction) ? direction : null,
+        sundersHeight: Number.isFinite(height) ? height : null,
+        sundersManufacturer: manufacturer || null,
+        osmType: osmType,
+        osmObjectId: String(el.id),
+        osmMount: tags['camera:mount'] || null,
+        osmSurveillance: tags.surveillance || null,
+        osmSurveillanceType: tags['surveillance:type'] || null,
+        osmSurveillanceZone: tags['surveillance:zone'] || null,
+        osmCameraAngle: Number.isFinite(angle) ? angle : null,
+        osmTimestamp: tags.timestamp || null,
+        osmVersion: Number.isFinite(version) ? version : null,
+        osmManufacturerWikidata: tags['manufacturer:wikidata'] || null,
+      });
+      regionAccepted++;
+    }
+
+      await sleep(250);
+    }
+
+    let summary = `      ${rootRegion.name}: ${regionFetched} fetched, ${regionAccepted} accepted`;
+    if (regionSplitCount > 0) summary += `, split ${regionSplitCount}x`;
+    if (regionFailedCount > 0) summary += `, failed chunks ${regionFailedCount}`;
+    console.log(summary);
+    await sleep(300);
+  }
+
+  console.log(`    Total fetched: ${totalFetched}, Qualified: ${cameras.length} surveillance cameras`);
+  return cameras;
+}
+
 /** Run an array of async tasks with max concurrency */
 async function pool(tasks, concurrency) {
   const results = [];
@@ -337,18 +586,35 @@ async function pool(tasks, concurrency) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n ShadowGrid Camera Collector`);
+  console.log(`  Mode        : ${MODE}`);
   console.log(`  Sources     : ${sources.length}`);
   console.log(`  Concurrency : ${CONCURRENCY}`);
   console.log(`  Output      : ${OUT_DIR}\n`);
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const tasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
-  const results = await pool(tasks, CONCURRENCY);
+  let results = [];
+  let allCameras = [];
 
-  // ── Flatten all cameras ────────────────────────────────────────────────────
-  const allCameras = results.flatMap(r => r.cameras);
-  console.log(`\n  Total cameras: ${allCameras.length}`);
+  if (MODE === 'trafficvision') {
+    const tasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
+    results = await pool(tasks, CONCURRENCY);
+    allCameras = results.flatMap(r => r.cameras);
+    console.log(`\n  Total cameras: ${allCameras.length}`);
+  } else if (MODE === 'both') {
+    console.log(`\n  Fetching trafficvision feeds...`);
+    const tvTasks = sources.map((s, idx) => () => fetchSource(s, idx, sources.length));
+    results = await pool(tvTasks, CONCURRENCY);
+    const tvCameras = results.flatMap(r => r.cameras);
+    console.log(`  Trafficvision cameras: ${tvCameras.length}`);
+    
+    const osmCameras = await fetchOsmSurveillanceCameras();
+    allCameras = [...tvCameras, ...osmCameras];
+    console.log(`\n  Combined (before dedup): ${allCameras.length}`);
+  } else {
+    allCameras = await fetchOsmSurveillanceCameras();
+    console.log(`\n  Total OSM surveillance cameras: ${allCameras.length}`);
+  }
 
   // ── Deduplicate by id ─────────────────────────────────────────────────────
   const seen = new Set();
@@ -364,16 +630,54 @@ async function main() {
   fs.writeFileSync(fullPath, JSON.stringify(unique));
   console.log(`  → ${fullPath}  (${(fs.statSync(fullPath).size / 1024 / 1024).toFixed(1)} MB)`);
 
-  // ── Compact/lite output — only fields needed for globe rendering ───────────
-  // Schema: [id, lat, lng, imageUrl|videoUrl, feedType, source]
-  const lite = unique.map(c => ({
-    i: c.id,
-    a: +c.lat.toFixed(5),
-    o: +c.lng.toFixed(5),
-    u: c.imageUrl || c.videoUrl,
-    t: c.feedType[0],     // 'i'=image, 'v'=video, 'h'=hybrid
-    s: c.source,
-  }));
+  // ── Compact/lite output — only fields needed for tile rendering ────────────
+  // Schema: id(i), lat(a), lon(o), imageUrl(u), videoUrl(x), feedType(t), source(s)
+  // For hybrid (h): both u and x are populated. For image (i): only u. For video (v): only x.
+  // OSM metadata fields: type(y), operator(z), direction(d), height(k), manufacturer(m),
+  // mount(r), surveillance(e), surveillance:type(w), zone(j), angle(g), timestamp(n),
+  // version(b), manufacturer:wikidata(f), OSM object type(p), OSM id(q).
+  const lite = unique.map(c => {
+    const feedTypeChar = c.feedType[0];  // 'i'=image, 'v'=video, 'h'=hybrid
+    const obj = {
+      i: c.id,
+      a: +c.lat.toFixed(5),
+      o: +c.lng.toFixed(5),
+      t: feedTypeChar,
+      s: c.source,
+    };
+
+    // Populate URLs based on feed type
+    if (feedTypeChar === 'h') {
+      // Hybrid: store both URLs
+      obj.u = c.imageUrl || null;
+      obj.x = c.videoUrl || null;
+    } else if (feedTypeChar === 'v') {
+      // Video only
+      obj.x = c.videoUrl || null;
+    } else {
+      // Image only
+      obj.u = c.imageUrl || null;
+    }
+
+    // OSM metadata enrichment fields
+    if (c.sundersType) obj.y = c.sundersType;                // camera:type from OSM
+    if (c.sundersOperator) obj.z = c.sundersOperator;        // operator name
+    if (c.sundersDirection != null) obj.d = c.sundersDirection; // direction in degrees
+    if (c.sundersHeight != null) obj.k = c.sundersHeight;    // height in meters
+    if (c.sundersManufacturer) obj.m = c.sundersManufacturer; // manufacturer (Flock Safety, etc.)
+    if (c.osmMount) obj.r = c.osmMount;
+    if (c.osmSurveillance) obj.e = c.osmSurveillance;
+    if (c.osmSurveillanceType) obj.w = c.osmSurveillanceType;
+    if (c.osmSurveillanceZone) obj.j = c.osmSurveillanceZone;
+    if (c.osmCameraAngle != null) obj.g = c.osmCameraAngle;
+    if (c.osmTimestamp) obj.n = c.osmTimestamp;
+    if (c.osmVersion != null) obj.b = c.osmVersion;
+    if (c.osmManufacturerWikidata) obj.f = c.osmManufacturerWikidata;
+    if (c.osmType) obj.p = c.osmType;
+    if (c.osmObjectId) obj.q = c.osmObjectId;
+
+    return obj;
+  });
   const litePath = path.join(OUT_DIR, 'cameras-lite.json');
   fs.writeFileSync(litePath, JSON.stringify(lite));
   console.log(`  → ${litePath}  (${(fs.statSync(litePath).size / 1024 / 1024).toFixed(1)} MB)`);
@@ -388,6 +692,8 @@ async function main() {
     ts: new Date().toISOString(),
     n:  lite.length,
     d:  lite.map(c => [+c.a.toFixed(4), +c.o.toFixed(4), T_IDX[c.t] ?? 0]),
+    // Count cameras with attached OSM metadata tags.
+    osmTagged: lite.filter(c => c.y || c.z || c.d || c.k || c.m || c.w || c.e).length,
   };
   const globePath = path.join(OUT_DIR, 'cameras-globe.json');
   fs.writeFileSync(globePath, JSON.stringify(globe));
@@ -426,19 +732,25 @@ async function main() {
   // ── Source meta ────────────────────────────────────────────────────────────
   const meta = {
     generated:    new Date().toISOString(),
+    mode: MODE,
     totalCameras: unique.length,
-    sources: results.map(({ source, name, count, error }) => ({
-      source, name, count, ...(error ? { error } : {}),
-    })),
+    sources: (MODE === 'trafficvision' || MODE === 'both')
+      ? results.map(({ source, name, count, error }) => ({
+          source, name, count, ...(error ? { error } : {}),
+        }))
+          .concat(MODE === 'both' ? [{ source: 'osm', name: 'OpenStreetMap Overpass' }] : [])
+      : [{ source: 'osm', name: 'OpenStreetMap Overpass', count: unique.length }],
   };
   const metaPath = path.join(OUT_DIR, 'meta.json');
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   console.log(`  → ${metaPath}`);
 
-  const failed = results.filter(r => r.error);
-  if (failed.length) {
-    console.log(`\n  ⚠  ${failed.length} sources failed:`);
-    failed.forEach(r => console.log(`    - ${r.name}: ${r.error}`));
+  if (MODE === 'trafficvision' || MODE === 'both') {
+    const failed = results.filter(r => r.error);
+    if (failed.length) {
+      console.log(`\n  ⚠  ${failed.length} sources failed:`);
+      failed.forEach(r => console.log(`    - ${r.name}: ${r.error}`));
+    }
   }
 
   console.log('\n  Done.\n');

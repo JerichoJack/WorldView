@@ -4,6 +4,8 @@
  * Last updated: 2026-03-13
  */
 
+import { clearSatelliteSelection } from '../layers/satellites.js';
+
 let currentMode = 'normal';
 const SERVER_HEAVY_MODE = ((import.meta.env.VITE_SERVER_HEAVY_MODE ?? 'false').toLowerCase() === 'true');
 
@@ -19,7 +21,7 @@ function setSatelliteFilterButtonsActive(active) {
 }
 
 function setFlightClassificationButtonsActive(active) {
-  const flightClassButtons = document.querySelectorAll('.filter-btn[data-filter^="flights-classification:"], .filter-btn[data-filter^="flights-overlay:"]');
+  const flightClassButtons = document.querySelectorAll('.filter-btn[data-filter^="flights-classification:"]');
   flightClassButtons.forEach((filterBtn) => {
     filterBtn.classList.toggle('active', active);
     filterBtn.classList.toggle('inactive', !active);
@@ -82,14 +84,6 @@ export function initControls(viewer, layers) {
             layer?.setAircraftClassificationFilter?.(filterType, false);
           }
         });
-
-        const flightOverlayButtons = document.querySelectorAll('.filter-btn[data-filter^="flights-overlay:"]');
-        flightOverlayButtons.forEach((filterBtn) => {
-          const [, filterType] = (filterBtn.dataset.filter ?? '').split(':');
-          if (filterType) {
-            layer?.setFlightZoneFilter?.(filterType, false);
-          }
-        });
       }
 
       // Show/hide filter container for this layer
@@ -129,15 +123,9 @@ export function initControls(viewer, layers) {
         if (prefix === 'flights-classification') {
           layerName = 'flights';
           filterCategory = 'classification';
-        } else if (prefix === 'flights-type') {
-          layerName = 'flights';
-          filterCategory = 'type';
-        } else if (prefix === 'flights-overlay') {
-          layerName = 'flights';
-          filterCategory = 'overlay';
         }
       } else {
-        // Old satellite format: "satellites:military"
+        // Standard format: "satellites:military" or "airspace:gps"
         const parts = filterSpec.split(':');
         layerName = parts[0];
         filterType = parts[1];
@@ -149,12 +137,11 @@ export function initControls(viewer, layers) {
       const layer = layers[layerName];
       if (layerName === 'flights' && filterCategory === 'classification') {
         layer?.setAircraftClassificationFilter?.(filterType, isActive);
-      } else if (layerName === 'flights' && filterCategory === 'type') {
-        layer?.setAircraftTypeFilter?.(filterType, isActive);
-      } else if (layerName === 'flights' && filterCategory === 'overlay') {
-        layer?.setFlightZoneFilter?.(filterType, isActive);
+      } else if (layerName === 'airspace') {
+        layer?.setZoneFilter?.(filterType, isActive);
       } else {
         // Satellites classification filter
+        clearSatelliteSelection();
         layer?.setClassificationFilter?.(filterType, isActive);
       }
     });
