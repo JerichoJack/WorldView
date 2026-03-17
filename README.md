@@ -411,10 +411,12 @@ ShadowGrid/
 - ✅ Phase 4 — Street traffic system (Google live traffic + OSM fallback)
 - ✅ Phase 5 — CCTV tiled camera layer + live snapshot/video inspection panel
 - ✅ Phase 6 — FAA TFR "Safe Flight" polygons, GPSJam medium/high interference hexagons, and IODA blackout polygons tied to Flight/Internet layers with click-to-inspect detail panels.
-- ✅ Phase 7 — Visual shaders (Normal, NVG, FLIR, CRT, Anime) via WebGL PostProcessStage + CSS overlays
-- ⬜ Phase 8 — Historical storage + replay backend (replace transient snapshot cache with durable spatial/time-indexed storage)
-- ⬜ Phase 9 — 4D timeline + data archival / replay with archived snapshots and a real time slider
-- ⬜ Phase 10 — Performance optimizations, mobile support, and UI polish
+- ✅ Phase 7 — Visual shaders (Normal, NVG, FLIR, CRT, Anime (don't know if it'll stay, likely not...)) via WebGL PostProcessStage + CSS overlays
+- ⬜ Phase 8 - Add Satellite Imagery Viewer panel with backend routing and collection-specific policy enforcement for Copernicus Data Space, Sentinel Hub, and NASA GIBS imagery sources (Working, some bugs to work out still)
+- ⬜ Phase 9 - Add Maritime layer with live ship traffic (AIS) and coastal radar coverage areas (Phase 9 — stub, not yet fully implemented)
+- ⬜ Phase 10 — Historical storage + replay backend (replace transient snapshot cache with durable spatial/time-indexed storage)
+- ⬜ Phase 11 — 4D timeline + data archival / replay with archived snapshots and a real time slider
+- ⬜ Phase 12 — Performance optimizations, mobile support, and UI polish
 
 ---
 

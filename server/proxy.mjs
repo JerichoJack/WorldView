@@ -53,7 +53,7 @@ function loadDotEnvVars() {
     out.set(key, val);
   }
   return out;
-}
+// ...existing code...
 
 const DOTENV_VARS = loadDotEnvVars();
 const GOOGLE_ROUTES_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || DOTENV_VARS.get('VITE_GOOGLE_MAPS_API_KEY') || '';
@@ -2305,97 +2305,43 @@ function toIsoString(value) {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
-function stripClosedRing(points) {
-  if (points.length < 2) return points;
-  const [firstLon, firstLat] = points[0];
-  const [lastLon, lastLat] = points[points.length - 1];
-  if (firstLon === lastLon && firstLat === lastLat) {
-    return points.slice(0, -1);
-  }
-  return points;
-}
+const COLLECTION_BACKEND_CAPABILITIES = {
+  'COPERNICUS/S2_SR_HARMONIZED': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S2_HARMONIZED': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S1_GRD': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S3/OLCI': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_NO2': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_CO': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_SO2': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_CH4': ['copernicus-dataspace', 'sentinel-hub'],
+  'COPERNICUS/S5P/OFFL/L3_AER_AI': ['copernicus-dataspace', 'sentinel-hub'],
+  'LANDSAT/LC09/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC08/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LE07/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LT05/C02/T1_L2': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC09/C02/T1_TOA': ['nasa-gibs', 'copernicus-dataspace'],
+  'LANDSAT/LC08/C02/T1_TOA': ['nasa-gibs', 'copernicus-dataspace'],
+  'MODIS/061/MOD09GA': ['nasa-gibs'],
+  'MODIS/061/MYD09GA': ['nasa-gibs'],
+  'MODIS/061/MOD09GQ': ['nasa-gibs'],
+  'MODIS/061/MOD13Q1': ['nasa-gibs'],
+  'MODIS/061/MOD11A2': ['nasa-gibs'],
+  'MODIS/061/MOD14A1': ['nasa-gibs'],
+  'MODIS/061/MOD10A1': ['nasa-gibs'],
+  'MODIS/061/MCD43A4': ['nasa-gibs'],
+  'NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG': ['nasa-gibs'],
+  'NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG': ['nasa-gibs'],
+  'NASA/VIIRS/VNP46A1': ['nasa-gibs'],
+  'NOAA/VIIRS/001/VNP09GA': ['nasa-gibs'],
+  'NOAA/VIIRS/001/VNP13A1': ['nasa-gibs'],
+  'NOAA/GOES/16/MCMIPF': ['nasa-gibs'],
+  'NOAA/GOES/17/MCMIPF': ['nasa-gibs'],
+  'NOAA/GOES/18/MCMIPF': ['nasa-gibs'],
+  'ASTER/AST_L1T_003': ['nasa-gibs'],
+  'NASA/ASTER_GED/AG100_003': ['nasa-gibs'],
+};
 
-function sanitizePoints(points) {
-  return stripClosedRing(points.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat)));
-}
-
-function geometryToOuterRings(geometry) {
-  if (!geometry) return [];
-  if (geometry.type === 'Polygon') {
-    return geometry.coordinates.slice(0, 1);
-  }
-  if (geometry.type === 'MultiPolygon') {
-    return geometry.coordinates.map(poly => poly[0]).filter(Boolean);
-  }
-  return [];
-}
-
-function getSummaryOverall(summary) {
-  return Number(summary?.scores?.overall ?? 0);
-}
-
-function formatCompactNumber(value) {
-  if (!Number.isFinite(value)) return '0';
-  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-}
-
-function inferFaaSeverity(text) {
-  return /vip|president|presidential|special security|security|space|rocket|hazard/i.test(text)
-    ? 'high'
-    : 'medium';
-}
-
-function parseAltitudeTokenMeters(rawToken, { isUpper = false } = {}) {
-  if (rawToken == null) return null;
-  const token = String(rawToken).trim().toUpperCase();
-  if (!token) return null;
-
-  if (/^(SFC|SURFACE|GND|GROUND)$/.test(token)) return 0;
-  if (/^(UNL|UNLIMITED|ABOVE)$/.test(token)) return isUpper ? OVERLAY_MAX_FLIGHT_HEIGHT_M : null;
-
-  const flMatch = token.match(/^FL\s*(\d{2,3})$/i);
-  if (flMatch) {
-    const flightLevel = Number(flMatch[1]);
-    return Number.isFinite(flightLevel) ? flightLevel * 100 * 0.3048 : null;
-  }
-
-  const numUnitMatch = token.match(/^(\d+(?:\.\d+)?)\s*(FT|FEET|F|M|METER|METERS|KM)?$/i);
-  if (!numUnitMatch) return null;
-
-  const value = Number(numUnitMatch[1]);
-  if (!Number.isFinite(value)) return null;
-  const unit = (numUnitMatch[2] ?? 'FT').toUpperCase();
-  if (unit === 'KM') return value * 1000;
-  if (unit.startsWith('M')) return value;
-  return value * 0.3048;
-}
-
-function pickFirstAltitudeMeters(candidates, options = {}) {
-  for (const candidate of candidates) {
-    const meters = parseAltitudeTokenMeters(candidate, options);
-    if (Number.isFinite(meters)) return meters;
-  }
-  return null;
-}
-
-function parseAltitudeRangeMetersFromText(text) {
-  const src = String(text ?? '');
-  if (!src.trim()) return { floorMeters: null, ceilingMeters: null };
-
-  const token = '(?:SFC|SURFACE|GND|GROUND|UNL|UNLIMITED|FL\\s*\\d{2,3}|\\d+(?:\\.\\d+)?\\s*(?:FT|FEET|F|M|METER|METERS|KM)?)';
-  const rangeRe = new RegExp(`(${token})\\s*(?:-|TO|THRU|THROUGH)\\s*(${token})`, 'i');
-  const match = src.toUpperCase().match(rangeRe);
-  if (!match) return { floorMeters: null, ceilingMeters: null };
-
-  const floorMeters = parseAltitudeTokenMeters(match[1], { isUpper: false });
-  const ceilingMeters = parseAltitudeTokenMeters(match[2], { isUpper: true });
-  return { floorMeters, ceilingMeters };
-}
-
-function normalizeVerticalBoundsMeters(floorMeters, ceilingMeters) {
-  const floor = Number.isFinite(floorMeters) ? Math.max(0, floorMeters) : null;
-  let ceiling = Number.isFinite(ceilingMeters) ? Math.max(0, ceilingMeters) : null;
-
+// ...existing code...
   if (Number.isFinite(floor) && Number.isFinite(ceiling) && ceiling <= floor) {
     ceiling = null;
   }
