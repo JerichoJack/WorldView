@@ -604,12 +604,14 @@ function drawReticle(viewer) {
         <div>
           <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Source</label>
           <select id="satellite-source-input" style="width:100%;padding:8px 10px;background:rgba(0,0,0,0.5);border:1px solid rgba(0,255,136,0.25);color:#00ff88;font-family:'Share Tech Mono',monospace;font-size:10px;outline:none;">
-            <option value="auto">Auto: NASA GIBS → Sentinel Hub → Basemap</option>
+            <option value="auto">Auto: Policy Backend → Basemap</option>
+            <option value="copernicus-dataspace">Copernicus Data Space</option>
             <option value="nasa-gibs">NASA GIBS</option>
             <option value="sentinel-hub">Sentinel Hub</option>
             <option value="basemap">Basemap only</option>
           </select>
-          <div style="margin-top:4px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(0,255,136,0.45);letter-spacing:0.05em;">Sentinel Hub is used only if the server has credentials configured.</div>
+          <div style="margin-top:4px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(0,255,136,0.45);letter-spacing:0.05em;">Copernicus Data Space / Sentinel Hub require server credentials for supported collections.</div>
+          <div id="satellite-backend-health" style="margin-top:5px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(210,240,255,0.85);letter-spacing:0.05em;">Backend Health: CDS <span id="satellite-health-cds" style="color:rgba(255,200,120,0.9)">…</span> · SH <span id="satellite-health-sh" style="color:rgba(255,200,120,0.9)">…</span> · <span id="satellite-health-updated" style="color:rgba(150,210,255,0.82)">updated --:--:-- UTC</span></div>
         </div>
         <div>
           <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Collection</label>
@@ -617,6 +619,7 @@ function drawReticle(viewer) {
             <option>Loading collections...</option>
           </select>
           <div id="satellite-collection-info" style="margin-top:4px;font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(0,255,136,0.45);letter-spacing:0.05em;">INFO: Loading collection details...</div>
+          <div id="satellite-collection-backend-badge" style="margin-top:5px;display:inline-flex;align-items:center;gap:6px;padding:3px 7px;border:1px solid rgba(0,170,255,0.45);background:rgba(0,170,255,0.12);color:rgba(110,205,255,0.95);font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:0.08em;text-transform:uppercase;">Backend: Loading...</div>
         </div>
         <div>
           <label style="display:block;font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.1em;color:rgba(0,255,136,0.6);margin-bottom:4px;text-transform:uppercase;">Bands</label>
@@ -1227,6 +1230,40 @@ function wireCameraControlButtons(viewer) {
     'aster-l1t': 'INFO: 15m - 4-16 days - NASA / METI ASTER',
     'aster-ged': 'INFO: 100m - Static - NASA ASTER',
   };
+  const SATELLITE_COLLECTION_BACKEND = {
+    's2-sr': 'copernicus-dataspace',
+    's2-toa': 'copernicus-dataspace',
+    's1-sar': 'copernicus-dataspace',
+    's3-olci': 'copernicus-dataspace',
+    's5p-no2': 'copernicus-dataspace',
+    's5p-co': 'copernicus-dataspace',
+    's5p-so2': 'copernicus-dataspace',
+    's5p-ch4': 'copernicus-dataspace',
+    's5p-aai': 'copernicus-dataspace',
+    'l9-sr': 'copernicus-dataspace',
+    'l8-sr': 'copernicus-dataspace',
+    'l7-sr': 'copernicus-dataspace',
+    'l5-sr': 'copernicus-dataspace',
+    'l9-toa': 'copernicus-dataspace',
+    'l8-toa': 'copernicus-dataspace',
+    'modis-terra-500': 'nasa-gibs',
+    'modis-aqua-500': 'nasa-gibs',
+    'modis-terra-250': 'nasa-gibs',
+    'modis-vi': 'nasa-gibs',
+    'modis-lst': 'nasa-gibs',
+    'modis-fire': 'nasa-gibs',
+    'modis-snow': 'nasa-gibs',
+    'modis-brdf': 'nasa-gibs',
+    'night-slc': 'nasa-gibs',
+    'night-cf': 'nasa-gibs',
+    'viirs-surf-refl': 'nasa-gibs',
+    'viirs-vi': 'nasa-gibs',
+    'goes-16': 'nasa-gibs',
+    'goes-17': 'nasa-gibs',
+    'goes-18': 'nasa-gibs',
+    'aster-l1t': 'copernicus-dataspace',
+    'aster-ged': 'copernicus-dataspace',
+  };
 
   const zoomInBtn = document.getElementById('hud-cam-zoom-in');
   const zoomOutBtn = document.getElementById('hud-cam-zoom-out');
@@ -1242,8 +1279,13 @@ function wireCameraControlButtons(viewer) {
   const satellitePickBtn = document.getElementById('satellite-pick-btn');
   const satellitePickHint = document.getElementById('satellite-pick-hint');
   const satelliteSourceInput = document.getElementById('satellite-source-input');
+  const satelliteBackendHealth = document.getElementById('satellite-backend-health');
+  const satelliteHealthCds = document.getElementById('satellite-health-cds');
+  const satelliteHealthSh = document.getElementById('satellite-health-sh');
+  const satelliteHealthUpdated = document.getElementById('satellite-health-updated');
   const satelliteCollectionInput = document.getElementById('satellite-collection-input');
   const satelliteCollectionInfo = document.getElementById('satellite-collection-info');
+  const satelliteCollectionBackendBadge = document.getElementById('satellite-collection-backend-badge');
   const satelliteBandPresetInput = document.getElementById('satellite-band-preset-input');
   const satelliteBandsInput = document.getElementById('satellite-bands-input');
   const satelliteDateInput = document.getElementById('satellite-date-input');
@@ -1326,6 +1368,49 @@ function wireCameraControlButtons(viewer) {
       }
     `;
     document.head.appendChild(style);
+  }
+
+  function paintHealthState(el, ready) {
+    if (!el) return;
+    el.textContent = ready ? 'READY' : 'NOT CONFIGURED';
+    el.style.color = ready ? 'rgba(0,255,136,0.9)' : 'rgba(255,140,120,0.92)';
+  }
+
+  function paintHealthTimestamp(ts) {
+    if (!satelliteHealthUpdated) return;
+    if (!Number.isFinite(ts)) {
+      satelliteHealthUpdated.textContent = 'updated --:--:-- UTC';
+      satelliteHealthUpdated.style.color = 'rgba(255,170,140,0.86)';
+      return;
+    }
+    const d = new Date(ts);
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
+    satelliteHealthUpdated.textContent = `updated ${hh}:${mm}:${ss} UTC`;
+    satelliteHealthUpdated.style.color = 'rgba(150,210,255,0.82)';
+  }
+
+  async function refreshSatelliteBackendHealth() {
+    if (!satelliteBackendHealth) return;
+    paintHealthState(satelliteHealthCds, false);
+    paintHealthState(satelliteHealthSh, false);
+    paintHealthTimestamp(Number.NaN);
+    try {
+      const resp = await fetch('/api/localproxy/api/satellite-imagery/health', { cache: 'no-store' });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(payload.error || `health check failed (${resp.status})`);
+      paintHealthState(satelliteHealthCds, Boolean(payload.copernicusDataspaceConfigured));
+      paintHealthState(satelliteHealthSh, Boolean(payload.sentinelHubConfigured));
+      paintHealthTimestamp(Number(payload.ts));
+    } catch {
+      if (satelliteBackendHealth) {
+        satelliteBackendHealth.style.color = 'rgba(255,140,120,0.92)';
+      }
+      if (satelliteHealthCds) satelliteHealthCds.textContent = 'OFFLINE';
+      if (satelliteHealthSh) satelliteHealthSh.textContent = 'OFFLINE';
+      paintHealthTimestamp(Number.NaN);
+    }
   }
 
   function getSelectedCollectionPreset() {
@@ -1447,9 +1532,20 @@ function wireCameraControlButtons(viewer) {
   }
 
   function updateCollectionInfo(selected) {
-    if (!satelliteCollectionInfo) return;
     const key = selected?.key ?? '';
-    satelliteCollectionInfo.textContent = SATELLITE_COLLECTION_INFO[key] ?? 'INFO: Resolution/revisit/source metadata unavailable.';
+    if (satelliteCollectionInfo) {
+      satelliteCollectionInfo.textContent = SATELLITE_COLLECTION_INFO[key] ?? 'INFO: Resolution/revisit/source metadata unavailable.';
+    }
+
+    if (satelliteCollectionBackendBadge) {
+      const backend = SATELLITE_COLLECTION_BACKEND[key] ?? 'nasa-gibs';
+      satelliteCollectionBackendBadge.textContent = `Backend: ${backend}`;
+      const isCopernicus = backend === 'copernicus-dataspace';
+      const isSentinel = backend === 'sentinel-hub';
+      satelliteCollectionBackendBadge.style.borderColor = isCopernicus ? 'rgba(0,200,255,0.55)' : (isSentinel ? 'rgba(255,170,0,0.52)' : 'rgba(0,170,255,0.45)');
+      satelliteCollectionBackendBadge.style.background = isCopernicus ? 'rgba(0,200,255,0.12)' : (isSentinel ? 'rgba(255,170,0,0.14)' : 'rgba(0,170,255,0.12)');
+      satelliteCollectionBackendBadge.style.color = isCopernicus ? 'rgba(145,235,255,0.98)' : (isSentinel ? 'rgba(255,221,153,0.95)' : 'rgba(110,205,255,0.95)');
+    }
   }
 
   function applyCollectionPreset(options = {}) {
@@ -1576,6 +1672,17 @@ function wireCameraControlButtons(viewer) {
     const note = escapeHtml(payload.note || '');
     const bandNote = escapeHtml(payload.bandNote || '');
     const provider = escapeHtml(payload.providerLabel || payload.provider || 'Imagery');
+    const req = payload.request ?? {};
+    const backendPolicy = payload.backendPolicy ?? req.backendPolicy ?? {};
+    const requestSummary = [
+      req.collectionId ? `Collection: ${escapeHtml(req.collectionId)}` : '',
+      req.bands ? `Bands: ${escapeHtml(req.bands)}` : '',
+      req.date ? `Date: ${escapeHtml(req.date)}` : '',
+      req.source ? `Source: ${escapeHtml(req.source)}` : '',
+    ].filter(Boolean).join(' · ');
+    const backendSummary = backendPolicy.authority
+      ? `Backend Policy: ${escapeHtml(backendPolicy.authority)} → ${escapeHtml(backendPolicy.preferredBackend || '')}`
+      : '';
     const locationLabel = escapeHtml(locationName || `${payload.location?.lat?.toFixed?.(4) ?? ''}, ${payload.location?.lon?.toFixed?.(4) ?? ''}`);
     const fallbackText = escapeHtml(formatFailureText(payload.failures));
 
@@ -1586,6 +1693,8 @@ function wireCameraControlButtons(viewer) {
           <div style="color:#ffffff;opacity:0.92;">${provider}</div>
           <div>${note}</div>
           <div>${bandNote}</div>
+          ${requestSummary ? `<div>${requestSummary}</div>` : ''}
+          ${backendSummary ? `<div>${backendSummary}</div>` : ''}
           <div>${locationLabel}</div>
           ${fallbackText ? `<div style="color:rgba(255,186,120,0.92);">Fallbacks: ${fallbackText}</div>` : ''}
         </div>
@@ -1602,6 +1711,8 @@ function wireCameraControlButtons(viewer) {
         <div style="color:#ffffff;opacity:0.92;">${provider}</div>
         <div>${note}</div>
         <div>${bandNote}</div>
+        ${requestSummary ? `<div>${requestSummary}</div>` : ''}
+        ${backendSummary ? `<div>${backendSummary}</div>` : ''}
         <div>${locationLabel}</div>
         ${fallbackText ? `<div style="color:rgba(255,186,120,0.92);">Fallbacks: ${fallbackText}</div>` : ''}
       </div>
@@ -1726,6 +1837,7 @@ function wireCameraControlButtons(viewer) {
       e.stopPropagation();
       satelliteModal.hidden = false;
       positionSatelliteModal();
+      refreshSatelliteBackendHealth();
       setSatelliteStatus('');
     });
   }

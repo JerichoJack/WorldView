@@ -192,8 +192,30 @@ Set `VITE_TRAFFIC_PROVIDER` to one of:
 
 The HUD Imagery panel now pulls preview imagery through the local proxy route `/api/localproxy/api/satellite-imagery/preview`.
 
-- NASA GIBS works without credentials and is the default live source.
-- Sentinel Hub is optional and server-side only. Add these to `.env` if you want the Imagery panel to use it:
+- Requests are now validated server-side for allowed `collection + bands + source` combinations.
+- The viewer enforces backend policy by collection authority:
+
+| Authority | Preferred Backend | Credentials Required? |
+|---|---|---|
+| ESA Copernicus | Copernicus Data Space | ✅ Yes |
+| ESA Copernicus / Sentinel-5P | Copernicus Data Space | ✅ Yes |
+| NASA / USGS (Landsat) | Copernicus Data Space | ✅ Yes |
+| NASA (MODIS) | NASA GIBS | ❌ No |
+| NOAA VIIRS (Night Lights) | NASA GIBS | ❌ No |
+| NASA VIIRS | NASA GIBS | ❌ No |
+| NOAA GOES | NASA GIBS | ❌ No |
+| NASA / METI ASTER | Copernicus Data Space | ✅ Yes |
+| NASA ASTER | Copernicus Data Space | ✅ Yes |
+
+- Copernicus Data Space credentials are required for Copernicus-backed collections. Add these to `.env`:
+
+```env
+COPERNICUS_DATASPACE_INSTANCE_ID=your_instance_id_here
+COPERNICUS_DATASPACE_TRUE_COLOR_LAYER=TRUE_COLOR
+COPERNICUS_DATASPACE_FALSE_COLOR_LAYER=FALSE_COLOR
+```
+
+- Sentinel Hub remains supported as an optional credential-backed fallback for compatible collections:
 
 ```env
 SENTINEL_HUB_INSTANCE_ID=your_instance_id_here
@@ -201,7 +223,8 @@ SENTINEL_HUB_TRUE_COLOR_LAYER=TRUE_COLOR
 SENTINEL_HUB_FALSE_COLOR_LAYER=FALSE_COLOR
 ```
 
-- If Sentinel Hub is not configured or a remote request fails, the viewer falls back to NASA GIBS and then to the current globe basemap.
+- For Copernicus-backed collections, missing credentials now return a clear API error with setup guidance.
+- NASA GIBS-backed collections run credential-free and fall back to basemap if remote imagery is unavailable.
 
 ---
 

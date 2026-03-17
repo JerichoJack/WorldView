@@ -71,6 +71,9 @@ const AIS_PROXY_KEY = process.env.VITE_MARINE_AIS_PROXY_KEY || DOTENV_VARS.get('
 const SENTINEL_HUB_INSTANCE_ID = process.env.SENTINEL_HUB_INSTANCE_ID || process.env.VITE_SENTINEL_HUB_INSTANCE_ID || DOTENV_VARS.get('SENTINEL_HUB_INSTANCE_ID') || DOTENV_VARS.get('VITE_SENTINEL_HUB_INSTANCE_ID') || '';
 const SENTINEL_HUB_TRUE_COLOR_LAYER = process.env.SENTINEL_HUB_TRUE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_TRUE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_TRUE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_TRUE_COLOR_LAYER') || 'TRUE_COLOR';
 const SENTINEL_HUB_FALSE_COLOR_LAYER = process.env.SENTINEL_HUB_FALSE_COLOR_LAYER || process.env.VITE_SENTINEL_HUB_FALSE_COLOR_LAYER || DOTENV_VARS.get('SENTINEL_HUB_FALSE_COLOR_LAYER') || DOTENV_VARS.get('VITE_SENTINEL_HUB_FALSE_COLOR_LAYER') || SENTINEL_HUB_TRUE_COLOR_LAYER;
+const COPERNICUS_DATASPACE_INSTANCE_ID = process.env.COPERNICUS_DATASPACE_INSTANCE_ID || DOTENV_VARS.get('COPERNICUS_DATASPACE_INSTANCE_ID') || '';
+const COPERNICUS_DATASPACE_TRUE_COLOR_LAYER = process.env.COPERNICUS_DATASPACE_TRUE_COLOR_LAYER || DOTENV_VARS.get('COPERNICUS_DATASPACE_TRUE_COLOR_LAYER') || 'TRUE_COLOR';
+const COPERNICUS_DATASPACE_FALSE_COLOR_LAYER = process.env.COPERNICUS_DATASPACE_FALSE_COLOR_LAYER || DOTENV_VARS.get('COPERNICUS_DATASPACE_FALSE_COLOR_LAYER') || COPERNICUS_DATASPACE_TRUE_COLOR_LAYER;
 const SATELLITE_MAX_PER_CATEGORY = Math.max(parseInt(process.env.VITE_SATELLITE_MAX_PER_CATEGORY || DOTENV_VARS.get('VITE_SATELLITE_MAX_PER_CATEGORY') || DOTENV_VARS.get('VITE_SATELLITE_MAX_OBJECTS') || '500', 10) || 500, 1);
 
 // ── Satellite snapshot cache (server-side propagation mode) ─────────────────
@@ -112,6 +115,9 @@ const CAMERA_STREAM_BOOT_TIMEOUT_MS = 8_000;
 const NASA_GIBS_WMS_URL = 'https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi';
 const SENTINEL_HUB_WMS_URL = SENTINEL_HUB_INSTANCE_ID
   ? `https://services.sentinel-hub.com/ogc/wms/${SENTINEL_HUB_INSTANCE_ID}`
+  : '';
+const COPERNICUS_DATASPACE_WMS_URL = COPERNICUS_DATASPACE_INSTANCE_ID
+  ? `https://sh.dataspace.copernicus.eu/ogc/wms/${COPERNICUS_DATASPACE_INSTANCE_ID}`
   : '';
 const SATELLITE_PREVIEW_IMAGE_SIZE = 768;
 let satCatalogTs = 0;
@@ -192,6 +198,235 @@ function normalizeIsoDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function canonicalizeBandExpression(value) {
+  return String(value ?? '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(',');
+}
+
+const SATELLITE_ALLOWED_SOURCES = new Set(['auto', 'nasa-gibs', 'sentinel-hub', 'copernicus-dataspace', 'basemap']);
+
+const SATELLITE_COLLECTION_BAND_ALLOWLIST = new Map([
+  ['COPERNICUS/S2_SR_HARMONIZED', new Set(['B4,B3,B2', 'B8,B4,B3', 'B12,B8,B4', 'B11,B8,B2'])],
+  ['COPERNICUS/S2_HARMONIZED', new Set(['B4,B3,B2', 'B8,B4,B3', 'B12,B8,B4', 'B11,B8,B2'])],
+  ['COPERNICUS/S1_GRD', new Set(['VV', 'VH', 'VV,VH'])],
+  ['COPERNICUS/S3/OLCI', new Set(['Oa08_radiance,Oa06_radiance,Oa04_radiance', 'Oa17_radiance,Oa08_radiance,Oa06_radiance', 'Oa21_radiance,Oa17_radiance,Oa08_radiance'])],
+  ['COPERNICUS/S5P/OFFL/L3_NO2', new Set(['tropospheric_NO2_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_CO', new Set(['CO_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_SO2', new Set(['SO2_column_number_density'])],
+  ['COPERNICUS/S5P/OFFL/L3_CH4', new Set(['CH4_column_volume_mixing_ratio_dry_air'])],
+  ['COPERNICUS/S5P/OFFL/L3_AER_AI', new Set(['absorbing_aerosol_index'])],
+  ['LANDSAT/LC09/C02/T1_L2', new Set(['SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B6,SR_B5,SR_B4', 'SR_B6,SR_B5,SR_B2'])],
+  ['LANDSAT/LC08/C02/T1_L2', new Set(['SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B6,SR_B5,SR_B4', 'SR_B6,SR_B5,SR_B2'])],
+  ['LANDSAT/LE07/C02/T1_L2', new Set(['SR_B3,SR_B2,SR_B1', 'SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B5,SR_B4,SR_B2'])],
+  ['LANDSAT/LT05/C02/T1_L2', new Set(['SR_B3,SR_B2,SR_B1', 'SR_B4,SR_B3,SR_B2', 'SR_B5,SR_B4,SR_B3', 'SR_B5,SR_B4,SR_B2'])],
+  ['LANDSAT/LC09/C02/T1_TOA', new Set(['B4,B3,B2', 'B5,B4,B3', 'B6,B5,B4', 'B6,B5,B2'])],
+  ['LANDSAT/LC08/C02/T1_TOA', new Set(['B4,B3,B2', 'B5,B4,B3', 'B6,B5,B4', 'B6,B5,B2'])],
+  ['MODIS/061/MOD09GA', new Set(['sur_refl_b01,sur_refl_b04,sur_refl_b03', 'sur_refl_b02,sur_refl_b01,sur_refl_b04', 'sur_refl_b06,sur_refl_b02,sur_refl_b01', 'sur_refl_b06,sur_refl_b02,sur_refl_b04'])],
+  ['MODIS/061/MYD09GA', new Set(['sur_refl_b01,sur_refl_b04,sur_refl_b03', 'sur_refl_b02,sur_refl_b01,sur_refl_b04', 'sur_refl_b06,sur_refl_b02,sur_refl_b01', 'sur_refl_b06,sur_refl_b02,sur_refl_b04'])],
+  ['MODIS/061/MOD09GQ', new Set(['sur_refl_b01,sur_refl_b02,sur_refl_b01', 'sur_refl_b02,sur_refl_b01,sur_refl_b02'])],
+  ['MODIS/061/MOD13Q1', new Set(['NDVI', 'EVI'])],
+  ['MODIS/061/MOD11A2', new Set(['LST_Day_1km', 'LST_Night_1km'])],
+  ['MODIS/061/MOD14A1', new Set(['FireMask', 'MaxFRP'])],
+  ['MODIS/061/MOD10A1', new Set(['NDSI_Snow_Cover', 'NDSI_Snow_Cover_Basic_QA'])],
+  ['MODIS/061/MCD43A4', new Set(['Nadir_Reflectance_Band1,Nadir_Reflectance_Band4,Nadir_Reflectance_Band3', 'Nadir_Reflectance_Band2,Nadir_Reflectance_Band1,Nadir_Reflectance_Band4', 'Nadir_Reflectance_Band6,Nadir_Reflectance_Band2,Nadir_Reflectance_Band1', 'Nadir_Reflectance_Band6,Nadir_Reflectance_Band2,Nadir_Reflectance_Band4'])],
+  ['NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG', new Set(['avg_rad'])],
+  ['NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG', new Set(['avg_rad'])],
+  ['NOAA/VIIRS/001/VNP09GA', new Set(['M5,M4,M3', 'M7,M5,M4', 'M11,M7,M5', 'M11,M7,M4'])],
+  ['NOAA/VIIRS/001/VNP13A1', new Set(['NDVI', 'EVI', 'EVI2'])],
+  ['NOAA/GOES/16/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C08', 'CMI_C13'])],
+  ['NOAA/GOES/17/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C13'])],
+  ['NOAA/GOES/18/MCMIPF', new Set(['CMI_C02,CMI_C02,CMI_C01', 'CMI_C03,CMI_C02,CMI_C01', 'CMI_C13,CMI_C07,CMI_C02', 'CMI_C02', 'CMI_C13'])],
+  ['ASTER/AST_L1T_003', new Set(['B3N,B02,B01', 'B04,B3N,B02', 'B3N', 'B04,B05,B06', 'B10,B11,B12'])],
+  ['NASA/ASTER_GED/AG100_003', new Set(['elevation', 'emissivity_mean', 'temperature'])],
+]);
+
+function getSatelliteCredentialSetupHint() {
+  return [
+    'Set SENTINEL_HUB_INSTANCE_ID in server .env (or environment).',
+    'Optionally set SENTINEL_HUB_TRUE_COLOR_LAYER and SENTINEL_HUB_FALSE_COLOR_LAYER.',
+    'Create/get credentials from Sentinel Hub Dashboard: https://apps.sentinel-hub.com/dashboard/',
+  ].join(' ');
+}
+
+function getCopernicusDataspaceSetupHint() {
+  return [
+    'Set COPERNICUS_DATASPACE_INSTANCE_ID in server .env (or environment).',
+    'Optionally set COPERNICUS_DATASPACE_TRUE_COLOR_LAYER and COPERNICUS_DATASPACE_FALSE_COLOR_LAYER.',
+    'Create/get your free Copernicus Data Space Browser instance from: https://dataspace.copernicus.eu/',
+  ].join(' ');
+}
+
+function getCollectionBackendPolicy(collectionId) {
+  const id = String(collectionId || '').trim().toUpperCase();
+
+  if (id.startsWith('COPERNICUS/S5P/')) {
+    return {
+      authority: 'ESA Copernicus / Sentinel-5P',
+      preferredBackend: 'copernicus-dataspace',
+      allowedSources: ['auto', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id.startsWith('COPERNICUS/')) {
+    return {
+      authority: 'ESA Copernicus',
+      preferredBackend: 'copernicus-dataspace',
+      allowedSources: ['auto', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id.startsWith('LANDSAT/')) {
+    return {
+      authority: 'NASA / USGS',
+      preferredBackend: 'copernicus-dataspace',
+      allowedSources: ['auto', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id === 'MODIS/061/MOD09GA' || id === 'MODIS/061/MYD09GA' || id === 'MODIS/061/MOD09GQ' || id === 'MODIS/061/MOD13Q1' || id === 'MODIS/061/MOD11A2' || id === 'MODIS/061/MOD14A1' || id === 'MODIS/061/MOD10A1' || id === 'MODIS/061/MCD43A4') {
+    return {
+      authority: 'NASA',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG' || id === 'NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG') {
+    return {
+      authority: 'NOAA VIIRS',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id.startsWith('NOAA/VIIRS/')) {
+    return {
+      authority: 'NASA VIIRS',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id.startsWith('NOAA/GOES/')) {
+    return {
+      authority: 'NOAA GOES',
+      preferredBackend: 'nasa-gibs',
+      allowedSources: ['auto', 'nasa-gibs', 'basemap'],
+      requiresRemoteCredentials: false,
+    };
+  }
+  if (id === 'ASTER/AST_L1T_003') {
+    return {
+      authority: 'NASA / METI ASTER',
+      preferredBackend: 'copernicus-dataspace',
+      allowedSources: ['auto', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: true,
+    };
+  }
+  if (id === 'NASA/ASTER_GED/AG100_003') {
+    return {
+      authority: 'NASA ASTER',
+      preferredBackend: 'copernicus-dataspace',
+      allowedSources: ['auto', 'copernicus-dataspace', 'sentinel-hub', 'basemap'],
+      requiresRemoteCredentials: true,
+    };
+  }
+
+  return {
+    authority: 'Unknown',
+    preferredBackend: 'nasa-gibs',
+    allowedSources: ['auto', 'nasa-gibs', 'sentinel-hub', 'copernicus-dataspace', 'basemap'],
+    requiresRemoteCredentials: false,
+  };
+}
+
+function validateSatelliteImageryRequest({ lat, lon, date, source, collectionId, bands }) {
+  const safeSource = String(source ?? 'auto').trim().toLowerCase();
+  if (!SATELLITE_ALLOWED_SOURCES.has(safeSource)) {
+    return { ok: false, error: `Invalid source '${safeSource}'. Allowed values: auto, nasa-gibs, sentinel-hub, copernicus-dataspace, basemap.` };
+  }
+
+  const safeCollectionId = String(collectionId ?? '').trim();
+  if (!SATELLITE_COLLECTION_BAND_ALLOWLIST.has(safeCollectionId)) {
+    return { ok: false, error: `Unsupported collection '${safeCollectionId}'.` };
+  }
+
+  const policy = getCollectionBackendPolicy(safeCollectionId);
+  if (!policy.allowedSources.includes(safeSource)) {
+    return { ok: false, error: `Collection '${safeCollectionId}' must use source '${policy.preferredBackend}' (or auto/basemap).` };
+  }
+
+  if (policy.requiresRemoteCredentials) {
+    const hasCopernicus = Boolean(COPERNICUS_DATASPACE_WMS_URL);
+    const hasSentinel = Boolean(SENTINEL_HUB_WMS_URL);
+    if (safeSource === 'copernicus-dataspace' && !hasCopernicus) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires Copernicus Data Space credentials for source copernicus-dataspace. ${getCopernicusDataspaceSetupHint()}`,
+      };
+    }
+    if (safeSource === 'sentinel-hub' && !hasSentinel) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires Sentinel Hub credentials for source sentinel-hub. ${getSatelliteCredentialSetupHint()}`,
+      };
+    }
+    if (safeSource === 'auto' && !hasCopernicus && !hasSentinel) {
+      return {
+        ok: false,
+        error: `Collection '${safeCollectionId}' requires either Copernicus Data Space or Sentinel Hub credentials. ${getCopernicusDataspaceSetupHint()} ${getSatelliteCredentialSetupHint()}`,
+      };
+    }
+  }
+
+  const safeBands = canonicalizeBandExpression(bands);
+  if (!safeBands) {
+    return { ok: false, error: 'Bands is required.' };
+  }
+
+  const allowedBands = SATELLITE_COLLECTION_BAND_ALLOWLIST.get(safeCollectionId);
+  if (!allowedBands.has(safeBands)) {
+    return { ok: false, error: `Bands '${safeBands}' are not valid for collection '${safeCollectionId}'.` };
+  }
+
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return { ok: false, error: 'lat/lon out of range. Expected lat [-90..90], lon [-180..180].' };
+  }
+
+  const rawDate = String(date ?? '').trim();
+  let safeDate = normalizeIsoDate(rawDate);
+  if (rawDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      return { ok: false, error: `Date '${rawDate}' must be in YYYY-MM-DD format.` };
+    }
+    const parsed = new Date(rawDate);
+    if (!Number.isFinite(parsed.getTime())) {
+      return { ok: false, error: `Date '${rawDate}' is invalid.` };
+    }
+    const todayIso = new Date().toISOString().slice(0, 10);
+    if (rawDate > todayIso) {
+      return { ok: false, error: `Date '${rawDate}' cannot be in the future.` };
+    }
+    safeDate = rawDate;
+  }
+
+  return {
+    ok: true,
+    value: {
+      lat,
+      lon,
+      date: safeDate,
+      source: safeSource,
+      collectionId: safeCollectionId,
+      bands: safeBands,
+      backendPolicy: policy,
+    },
+  };
+}
+
 function computeImageryRectangle(lat, lon, radiusKm = 80) {
   const safeLat = clamp(Number(lat) || 0, -85, 85);
   const safeLon = ((((Number(lon) || 0) + 180) % 360) + 360) % 360 - 180;
@@ -217,17 +452,29 @@ function getImageryIntent(collectionId, bands) {
 
 function pickSatelliteSourceOrder(source, collectionId, bands) {
   const requested = String(source || 'auto').toLowerCase();
-  const intent = getImageryIntent(collectionId, bands);
-  if (requested === 'nasa-gibs') return ['nasa-gibs', 'basemap'];
-  if (requested === 'sentinel-hub') return ['sentinel-hub', 'nasa-gibs', 'basemap'];
+  const policy = getCollectionBackendPolicy(collectionId);
   if (requested === 'basemap') return ['basemap'];
-  if (intent.prefersSentinelHub && SENTINEL_HUB_WMS_URL) {
-    return ['sentinel-hub', 'nasa-gibs', 'basemap'];
+  if (requested === 'nasa-gibs') return ['nasa-gibs', 'basemap'];
+  if (requested === 'sentinel-hub') return ['sentinel-hub', 'basemap'];
+  if (requested === 'copernicus-dataspace') return ['copernicus-dataspace', 'basemap'];
+
+  const autoOrder = [];
+  if (policy.preferredBackend === 'copernicus-dataspace') {
+    if (COPERNICUS_DATASPACE_WMS_URL) autoOrder.push('copernicus-dataspace');
+    if (SENTINEL_HUB_WMS_URL) autoOrder.push('sentinel-hub');
+  } else if (policy.preferredBackend === 'sentinel-hub') {
+    if (SENTINEL_HUB_WMS_URL) autoOrder.push('sentinel-hub');
+    if (COPERNICUS_DATASPACE_WMS_URL) autoOrder.push('copernicus-dataspace');
+  } else {
+    autoOrder.push(policy.preferredBackend);
   }
-  if (intent.prefersLandsat && SENTINEL_HUB_WMS_URL) {
-    return ['sentinel-hub', 'nasa-gibs', 'basemap'];
+
+  if (!autoOrder.includes('nasa-gibs') && policy.preferredBackend === 'nasa-gibs') {
+    autoOrder.push('nasa-gibs');
   }
-  return ['nasa-gibs', 'sentinel-hub', 'basemap'];
+
+  autoOrder.push('basemap');
+  return [...new Set(autoOrder)];
 }
 
 function buildWmsPreviewUrl(baseUrl, { layer, rectangle, date, format = 'image/jpeg', width = SATELLITE_PREVIEW_IMAGE_SIZE, height = SATELLITE_PREVIEW_IMAGE_SIZE }) {
@@ -307,23 +554,52 @@ async function buildSentinelHubPreview({ lat, lon, date, collectionId, bands }) 
   };
 }
 
+async function buildCopernicusDataspacePreview({ lat, lon, date, collectionId, bands }) {
+  if (!COPERNICUS_DATASPACE_WMS_URL) {
+    throw new Error('Copernicus Data Space is not configured on the server');
+  }
+  const rectangle = computeImageryRectangle(lat, lon, 60);
+  const isoDate = normalizeIsoDate(date);
+  const { falseColor } = getImageryIntent(collectionId, bands);
+  const layer = falseColor ? COPERNICUS_DATASPACE_FALSE_COLOR_LAYER : COPERNICUS_DATASPACE_TRUE_COLOR_LAYER;
+  const previewUrl = buildWmsPreviewUrl(COPERNICUS_DATASPACE_WMS_URL, { layer, rectangle, date: `${isoDate}/${isoDate}` });
+  await verifyPreviewUrl(previewUrl);
+  return {
+    provider: 'copernicus-dataspace',
+    providerLabel: 'Copernicus Data Space',
+    previewUrl,
+    rectangle,
+    date: isoDate,
+    note: `Copernicus Data Space WMS layer ${layer}.`,
+    bandNote: falseColor
+      ? 'Copernicus Data Space false-color layer requested.'
+      : 'Copernicus Data Space true-color layer requested.',
+  };
+}
+
 async function resolveSatelliteImageryPreview({ lat, lon, date, source, collectionId, bands }) {
   const order = pickSatelliteSourceOrder(source, collectionId, bands);
+  const backendPolicy = getCollectionBackendPolicy(collectionId);
   const failures = [];
   for (const candidate of order) {
     try {
+      if (candidate === 'copernicus-dataspace') {
+        const payload = await buildCopernicusDataspacePreview({ lat, lon, date, collectionId, bands });
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+      }
       if (candidate === 'nasa-gibs') {
         const payload = await buildNasaGibsPreview({ lat, lon, date, collectionId, bands });
-        return { ...payload, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
       }
       if (candidate === 'sentinel-hub') {
         const payload = await buildSentinelHubPreview({ lat, lon, date, collectionId, bands });
-        return { ...payload, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
+        return { ...payload, backendPolicy, requestedSource: String(source || 'auto').toLowerCase(), fallbackCount: failures.length, failures };
       }
       if (candidate === 'basemap') {
         return {
           provider: 'basemap',
           providerLabel: 'Globe Basemap',
+          backendPolicy,
           requestedSource: String(source || 'auto').toLowerCase(),
           previewUrl: null,
           rectangle: computeImageryRectangle(lat, lon, 90),
@@ -2853,6 +3129,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'marine snapshot failed' }));
     }
+  } else if (url === '/api/satellite-imagery/health') {
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      copernicusDataspaceConfigured: Boolean(COPERNICUS_DATASPACE_WMS_URL),
+      sentinelHubConfigured: Boolean(SENTINEL_HUB_WMS_URL),
+    }));
   } else if (url === '/api/satellite-imagery/preview') {
     const lat = Number(query.lat);
     const lon = Number(query.lon);
@@ -2861,19 +3145,37 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'lat and lon are required numeric query params' }));
       return;
     }
+
+    const validation = validateSatelliteImageryRequest({
+      lat,
+      lon,
+      date: String(query.date ?? ''),
+      source: String(query.source ?? 'auto'),
+      collectionId: String(query.collection ?? ''),
+      bands: String(query.bands ?? ''),
+    });
+    if (!validation.ok) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: validation.error }));
+      return;
+    }
+
+    const request = validation.value;
     try {
       const payload = await resolveSatelliteImageryPreview({
-        lat,
-        lon,
-        date: String(query.date ?? ''),
-        source: String(query.source ?? 'auto'),
-        collectionId: String(query.collection ?? ''),
-        bands: String(query.bands ?? ''),
+        lat: request.lat,
+        lon: request.lon,
+        date: request.date,
+        source: request.source,
+        collectionId: request.collectionId,
+        bands: request.bands,
       });
       res.writeHead(200);
       res.end(JSON.stringify({
         ...payload,
-        location: { lat, lon },
+        location: { lat: request.lat, lon: request.lon },
+        request,
+        copernicusDataspaceConfigured: Boolean(COPERNICUS_DATASPACE_WMS_URL),
         sentinelHubConfigured: Boolean(SENTINEL_HUB_WMS_URL),
       }));
     } catch (err) {

@@ -73,11 +73,7 @@ function applySceneSettings(viewer) {
   const scene = viewer.scene;
   scene.backgroundColor                = Cesium.Color.BLACK;
   scene.fog.enabled                    = false;
-  scene.globe.enableLighting           = DAYNIGHT_ENABLED;
-  scene.globe.dynamicAtmosphereLighting = DAYNIGHT_ENABLED;
-  scene.globe.dynamicAtmosphereLightingFromSun = DAYNIGHT_ENABLED;
-  scene.globe.showGroundAtmosphere     = DAYNIGHT_ENABLED;
-  scene.skyAtmosphere.show             = DAYNIGHT_ENABLED;
+  setDayNightEffectEnabled(viewer, DAYNIGHT_ENABLED);
   scene.globe.depthTestAgainstTerrain  = true;
   scene.postProcessStages.fxaa.enabled = true;
 
@@ -151,6 +147,15 @@ function applySceneSettings(viewer) {
   }, { passive: false });
 }
 
+function setDayNightEffectEnabled(viewer, enabled) {
+  const scene = viewer.scene;
+  scene.globe.enableLighting = enabled;
+  scene.globe.dynamicAtmosphereLighting = enabled;
+  scene.globe.dynamicAtmosphereLightingFromSun = enabled;
+  scene.globe.showGroundAtmosphere = enabled;
+  scene.skyAtmosphere.show = enabled;
+}
+
 
 // ── Labels + borders overlay ──────────────────────────────────────────────────
 // Adds a transparent country/city labels + borders layer on top of any base imagery.
@@ -190,6 +195,7 @@ async function addLabelsOverlay(viewer) {
     };
 
     let orbitalSuppressed = false;
+    let dayNightSuppressedForLabels = false;
 
     function syncLabelVisibility() {
       const h = viewer.camera.positionCartographic?.height ?? Number.POSITIVE_INFINITY;
@@ -205,6 +211,14 @@ async function addLabelsOverlay(viewer) {
         const start = LABEL_HEIGHT.showLabelsBelow;
         const t = Cesium.Math.clamp((start - h) / fadeRange, 0, 1);
         adaptiveLabels.alpha = 0.4 + 0.6 * t;
+      }
+
+      if (DAYNIGHT_ENABLED) {
+        const shouldSuppressDayNight = visible && h <= LABEL_HEIGHT.showLabelsBelow;
+        if (shouldSuppressDayNight !== dayNightSuppressedForLabels) {
+          dayNightSuppressedForLabels = shouldSuppressDayNight;
+          setDayNightEffectEnabled(viewer, !dayNightSuppressedForLabels);
+        }
       }
     }
 
