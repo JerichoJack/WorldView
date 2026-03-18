@@ -1491,3 +1491,4 @@ function iconTest() {
     console.log(svgJson);
     return can;
 }
+export { shapes }
