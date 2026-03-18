@@ -1,6 +1,6 @@
 # 🌍 ShadowGrid
 
-A browser-based geospatial intelligence platform that lets you observe any place on Earth through the lens of a surveillance analyst — night vision, FLIR thermal, CRT scan lines, live air traffic with detailed aircraft silhouettes, and real satellite orbits draped directly onto a photorealistic 3D globe.
+A browser-based geospatial intelligence platform that lets you observe any place on Earth through the lens of a surveillance analyst — night vision, FLIR thermal, CRT scan lines, live air traffic with detailed aircraft silhouettes and 3D models, current on-demand satellite imagery, and real satellite tracking with orbits draped directly onto a photorealistic 3D globe.
 
 All of it running in a browser tab. No classified clearances required.
 
