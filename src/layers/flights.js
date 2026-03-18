@@ -1439,51 +1439,127 @@ function altitudeColor(altFt) { return '#00e676'; } // stub — no longer used f
 function getShape(a) {
   const tc  = (a.typecode ?? '').toUpperCase().trim();
   const cat = (a.category ?? '').toUpperCase().trim();
+  const debugInfo = {
+    typecode: tc,
+    category: cat,
+    typeDescription: (a.typeDescription ?? '').toUpperCase().trim(),
+    wtc: (a.wtc ?? '').toUpperCase().trim(),
+    altFt: a.altFt ?? 0,
+    selected: null,
+    reason: null
+  };
 
   // 1. Exact type designator match
   if (tc && tc in TypeDesignatorIcons) {
-    return TypeDesignatorIcons[tc][0];
+    debugInfo.selected = TypeDesignatorIcons[tc][0];
+    debugInfo.reason = 'TypeDesignatorIcons exact match';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
   }
 
   // 2–4. typeDescription fallback (adsb.fi provides this as a.typeDescription)
-  const td  = (a.typeDescription ?? '').toUpperCase().trim();
-  const wtc = (a.wtc ?? '').toUpperCase().trim();
+  const td  = debugInfo.typeDescription;
+  const wtc = debugInfo.wtc;
 
   if (td.length === 3) {
     // 2. With WTC suffix e.g. "L2J-M"
     if (wtc.length === 1) {
       const key5 = td + '-' + wtc;
-      // Special case: L2J-M + A2 category → swept jet
-      if (key5 === 'L2J-M' && cat === 'A2') return 'jet_swept';
-      if (key5 in TypeDescriptionIcons) return TypeDescriptionIcons[key5][0];
+      if (key5 === 'L2J-M' && cat === 'A2') {
+        debugInfo.selected = 'jet_swept';
+        debugInfo.reason = 'Special case: L2J-M + A2';
+        console.log('[getShape]', debugInfo);
+        return debugInfo.selected;
+      }
+      if (key5 in TypeDescriptionIcons) {
+        debugInfo.selected = TypeDescriptionIcons[key5][0];
+        debugInfo.reason = 'TypeDescriptionIcons 5-char key';
+        console.log('[getShape]', debugInfo);
+        return debugInfo.selected;
+      }
     }
     // 3. Without WTC
-    if (td in TypeDescriptionIcons) return TypeDescriptionIcons[td][0];
+    if (td in TypeDescriptionIcons) {
+      debugInfo.selected = TypeDescriptionIcons[td][0];
+      debugInfo.reason = 'TypeDescriptionIcons 3-char key';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
     // 4. Basic type letter only
     const basicType = td.charAt(0);
-    if (basicType in TypeDescriptionIcons) return TypeDescriptionIcons[basicType][0];
+    if (basicType in TypeDescriptionIcons) {
+      debugInfo.selected = TypeDescriptionIcons[basicType][0];
+      debugInfo.reason = 'TypeDescriptionIcons 1-char key';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
   } else if (td.length === 1 && td in TypeDescriptionIcons) {
-    return TypeDescriptionIcons[td][0];
+    debugInfo.selected = TypeDescriptionIcons[td][0];
+    debugInfo.reason = 'TypeDescriptionIcons 1-char key (else)';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
   }
 
   // 5. ADS-B category
-  if (cat && cat in CategoryIcons) return CategoryIcons[cat][0];
+  if (cat && cat in CategoryIcons) {
+    debugInfo.selected = CategoryIcons[cat][0];
+    debugInfo.reason = 'CategoryIcons';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
+  }
 
   // Regex catch-alls for common type-code patterns not in explicit tables
   if (tc) {
-    if (/^H\d/.test(tc) || /^S(6|7|9)\d/.test(tc) || /^(EC|BO|BK|AS|AW|MD9)/.test(tc))
-      return 'helicopter';
-    if (/^(B74|B77|A38|A34)/.test(tc)) return 'heavy_4e';
-    if (/^(B76|B78|A3[03]|A35)/.test(tc)) return 'heavy_2e';
-    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(tc)) return 'airliner';
+    if (/^H\d/.test(tc) || /^S(6|7|9)\d/.test(tc) || /^(EC|BO|BK|AS|AW|MD9)/.test(tc)) {
+      debugInfo.selected = 'helicopter';
+      debugInfo.reason = 'Regex: helicopter';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
+    if (/^(B74|B77|A38|A34)/.test(tc)) {
+      debugInfo.selected = 'heavy_4e';
+      debugInfo.reason = 'Regex: heavy_4e';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
+    if (/^(B76|B78|A3[03]|A35)/.test(tc)) {
+      debugInfo.selected = 'heavy_2e';
+      debugInfo.reason = 'Regex: heavy_2e';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
+    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(tc)) {
+      debugInfo.selected = 'airliner';
+      debugInfo.reason = 'Regex: airliner';
+      console.log('[getShape]', debugInfo);
+      return debugInfo.selected;
+    }
   }
 
   // 6. Altitude proxy (absolute last resort)
-  const alt = a.altFt ?? 0;
-  if (alt > 25000) return 'airliner';
-  if (alt > 5000)  return 'twin_large';
-  if (alt > 0)     return 'cessna';
-  return 'unknown';
+  const alt = debugInfo.altFt;
+  if (alt > 25000) {
+    debugInfo.selected = 'airliner';
+    debugInfo.reason = 'Altitude > 25000';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
+  }
+  if (alt > 5000)  {
+    debugInfo.selected = 'twin_large';
+    debugInfo.reason = 'Altitude > 5000';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
+  }
+  if (alt > 0)     {
+    debugInfo.selected = 'cessna';
+    debugInfo.reason = 'Altitude > 0';
+    console.log('[getShape]', debugInfo);
+    return debugInfo.selected;
+  }
+  debugInfo.selected = 'unknown';
+  debugInfo.reason = 'Default';
+  console.log('[getShape]', debugInfo);
+  return debugInfo.selected;
 }
 
 // ── Build a data URI for a given shape + color ────────────────────────────────
