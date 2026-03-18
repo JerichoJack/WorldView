@@ -1587,7 +1587,10 @@ function buildSvgUri(shape, color) {
   const glow     = glowColor(color);
   const shapeDef = SHAPES[shape] ?? SHAPES.unknown;
   const vb       = shapeDef.viewBox ?? '0 0 32 32';
-  const w = 320, h = 320;
+
+  // Use ICON_SIZE_PX for per-shape icon size, fallback to 32 if not found
+  const iconSize = ICON_SIZE_PX[shape] || 32;
+  const w = iconSize, h = iconSize;
 
   // Pass 1 — glow stroke only (drawn behind)
   const glowInner = shapeToInnerSvg(shapeDef, 'none', glow);
