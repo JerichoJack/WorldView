@@ -8,8 +8,10 @@ All of it running in a browser tab. No classified clearances required.
 
 ## Screenshots
 
+NVG Filter during 3D Flight Model Tracking
 ![NVG Filter & 3D Flight Model Tracking](https://github.com/JerichoJack/ShadowGrid/blob/main/src/archive/Screenshot%202026-03-17%20120111.png)
 
+FLIR Filter during 3D Flight Model Tracking
 ![FLIR Filter & 3D Flight Model Tracking](https://github.com/JerichoJack/ShadowGrid/blob/main/src/archive/Screenshot%202026-03-17%20120137.png)
 
 ---
