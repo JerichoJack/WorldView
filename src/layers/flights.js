@@ -47,15 +47,11 @@ function enrichAircraftFromDb(a) {
   if (!icao24) return;
   const db = aircraftDb[icao24];
   if (!db) return;
-  const before = { typecode: a.typecode, manufacturer: a.manufacturer, model: a.model, category: a.category };
-  let changed = false;
-  if (!a.typecode && db.typecode) { a.typecode = db.typecode; changed = true; }
-  if (!a.manufacturer && db.manufacturer) { a.manufacturer = db.manufacturer; changed = true; }
-  if (!a.model && db.model) { a.model = db.model; changed = true; }
-  if (!a.category && db.category) { a.category = db.category; changed = true; }
-  if (changed && (db.typecode?.startsWith('H') || db.model?.toLowerCase().includes('helicopter') || db.category == 8)) {
-    console.log('[enrichAircraftFromDb] Enriched helicopter', icao24, { before, after: { typecode: a.typecode, manufacturer: a.manufacturer, model: a.model, category: a.category }, db });
-  }
+  if (!a.typecode && db.typecode) a.typecode = db.typecode;
+  if (!a.manufacturer && db.manufacturer) a.manufacturer = db.manufacturer;
+  if (!a.model && db.model) a.model = db.model;
+  if (!a.category && db.category) a.category = db.category;
+  // Add more fields as needed
 }
 /**
  * File: src/layers/flights.js
@@ -1500,9 +1496,6 @@ function getShape(a) {
   enrichAircraftFromDb(a);
   const tc  = (a.typecode ?? '').toUpperCase().trim();
   const cat = (a.category ?? '').toUpperCase().trim();
-  if (!tc || tc.startsWith('H') || cat === 'A7' || a.model?.toLowerCase().includes('helicopter')) {
-    console.log('[getShape] Helicopter candidate', { icao24: a.icao24, typecode: tc, category: cat, model: a.model, manufacturer: a.manufacturer, raw: a });
-  }
 
   // 1. Exact type designator match
   if (tc && tc in TypeDesignatorIcons) {
