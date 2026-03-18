@@ -651,56 +651,56 @@ const ICON_SIZE_PX = {
 
 const AIRCRAFT_MODEL_MAP = new Map([
   // Airbus narrow-body
-  ['A318', 'a318.glb'],
-  ['A319', 'a319.glb'],
-  ['A320', 'a320.glb'],
-  ['A321', 'a321.glb'],
+  ['A318', '3d_aircraft_models/a318.glb'],
+  ['A319', '3d_aircraft_models/a319.glb'],
+  ['A320', '3d_aircraft_models/a320.glb'],
+  ['A321', '3d_aircraft_models/a321.glb'],
   // Airbus wide-body
-  ['A332', 'a332.glb'],
-  ['A333', 'a333.glb'],
-  ['A343', 'a343.glb'],
-  ['A346', 'a346.glb'],
-  ['A359', 'a359.glb'],
-  ['A380', 'a380.glb'],
+  ['A332', '3d_aircraft_models/a332.glb'],
+  ['A333', '3d_aircraft_models/a333.glb'],
+  ['A343', '3d_aircraft_models/a343.glb'],
+  ['A346', '3d_aircraft_models/a346.glb'],
+  ['A359', '3d_aircraft_models/a359.glb'],
+  ['A380', '3d_aircraft_models/a380.glb'],
   // Boeing narrow-body
-  ['B736', 'b736.glb'],
-  ['B737', 'b737.glb'],
-  ['B738', 'b738.glb'],
-  ['B739', 'b739.glb'],
+  ['B736', '3d_aircraft_models/b736.glb'],
+  ['B737', '3d_aircraft_models/b737.glb'],
+  ['B738', '3d_aircraft_models/b738.glb'],
+  ['B739', '3d_aircraft_models/b739.glb'],
   // Boeing wide-body
-  ['B744', 'b744.glb'],
-  ['B748', 'b748.glb'],
-  ['B752', 'b752.glb'],
-  ['B753', 'b753.glb'],
-  ['B762', 'b762.glb'],
-  ['B763', 'b763.glb'],
-  ['B764', 'b764.glb'],
-  ['B772', 'b772.glb'],
-  ['B773', 'b773.glb'],
-  ['B788', 'b788.glb'],
-  ['B789', 'b789.glb'],
+  ['B744', '3d_aircraft_models/b744.glb'],
+  ['B748', '3d_aircraft_models/b748.glb'],
+  ['B752', '3d_aircraft_models/b752.glb'],
+  ['B753', '3d_aircraft_models/b753.glb'],
+  ['B762', '3d_aircraft_models/b762.glb'],
+  ['B763', '3d_aircraft_models/b763.glb'],
+  ['B764', '3d_aircraft_models/b764.glb'],
+  ['B772', '3d_aircraft_models/b772.glb'],
+  ['B773', '3d_aircraft_models/b773.glb'],
+  ['B788', '3d_aircraft_models/b788.glb'],
+  ['B789', '3d_aircraft_models/b789.glb'],
   // Other commercial
-  ['ATR42', 'atr42.glb'],
-  ['BAE146', 'bae146.glb'],
-  ['CRJ700', 'crj700.glb'],
-  ['CRJ900', 'crj900.glb'],
-  ['CS100', 'cs100.glb'],
-  ['CS300', 'cs300.glb'],
-  ['E170', 'e170.glb'],
-  ['E190', 'e190.glb'],
-  ['Q400', 'q400.glb'],
+  ['ATR42', '3d_aircraft_models/atr42.glb'],
+  ['BAE146', '3d_aircraft_models/bae146.glb'],
+  ['CRJ700', '3d_aircraft_models/crj700.glb'],
+  ['CRJ900', '3d_aircraft_models/crj900.glb'],
+  ['CS100', '3d_aircraft_models/cs100.glb'],
+  ['CS300', '3d_aircraft_models/cs300.glb'],
+  ['E170', '3d_aircraft_models/e170.glb'],
+  ['E190', '3d_aircraft_models/e190.glb'],
+  ['Q400', '3d_aircraft_models/q400.glb'],
   // Cargo/Military
-  ['AN225', 'an225.gltf'],
-  ['BELUGA', 'beluga.glb'],
+  ['AN225', '3d_aircraft_models/an225.gltf'],
+  ['BELUGA', '3d_aircraft_models/beluga.glb'],
   // General aviation
-  ['PA28', 'pa28.glb'],
-  ['C172', 'pa28.glb'],
-  ['ASK21', 'ask21.glb'],
+  ['PA28', '3d_aircraft_models/pa28.glb'],
+  ['C172', '3d_aircraft_models/pa28.glb'],
+  ['ASK21', '3d_aircraft_models/ask21.glb'],
 ]);
 
 /**
  * Get the 3D model URL for an aircraft type.
- * First tries to load from /src/assets/{typecode}.glb, then falls back to procedural generation.
+ * First tries to load from /src/assets/3d_aircraft_models/{typecode}.glb, then falls back to procedural generation.
  * @param {string} typecode - ICAO aircraft type code (e.g. 'B739', 'A320')
  * @param {string} shape - Aircraft shape (jet, helicopter, etc.)
  * @param {string} color - Hex color code
