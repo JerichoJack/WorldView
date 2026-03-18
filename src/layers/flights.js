@@ -1844,6 +1844,15 @@ function renderAircraft(viewer, aircraft) {
     const altMetres = a.altFt * 0.3048;
     const color     = aircraftColor(a);
     const shape     = getShape(a);
+    if (!SHAPES[shape]) {
+      console.warn('[flights.js] Unknown shape for aircraft:', {
+        id: a.id,
+        typecode: a.typecode,
+        typeDescription: a.typeDescription,
+        category: a.category,
+        resolvedShape: shape
+      });
+    }
     const classification = classifyAircraft(a);  // Get classification for visibility
     const icon      = buildSvgUri(shape, color);
     const iconSizePx = ICON_SIZE_PX[shape] ?? ICON_SIZE_PX.generic;
