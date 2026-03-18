@@ -482,6 +482,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [airplanes.live](https://airplanes.live) — free community ADS-B + MLAT flight data
 - [adsb.lol](https://adsb.lol) — free open ADS-B flight data (ODbL)
 - [tar1090](https://github.com/wiedehopf/tar1090/tree/master) — open-source ADS-B receiver software powering many community flight data feeds
+- [3D Aircraft Models](https://github.com/Flightradar24/fr24-3d-models) — used for 3D flight model tracking mode (Follow mode)
 - [OpenSky Network](https://opensky-network.org) — open flight data research network
 - [CelesTrak](https://celestrak.org) — free satellite TLE data
 - [Space-Track.org](https://space-track.org) — US Space Force satellite catalog
