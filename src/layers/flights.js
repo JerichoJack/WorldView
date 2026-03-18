@@ -3,7 +3,7 @@
 // Example CDN: <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
 // Path to your CSV file (choose the latest or preferred one)
-const AIRCRAFT_CSV_PATH = '/src/assets/aircraft-database-files/aircraft-database-complete-2025-08.csv';
+const AIRCRAFT_CSV_PATH = '/aircraft-database-complete-2025-08.csv';
 
 // Will hold icao24 (lowercase) → {typecode, manufacturer, model, category, ...}
 const aircraftDb = {};
