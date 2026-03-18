@@ -1,3 +1,58 @@
+// --- Aircraft database lookup (offline icao24 → typecode/model/category) ---
+// Requires PapaParse: npm install papaparse OR include via CDN
+// Example CDN: <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+// Path to your CSV file (choose the latest or preferred one)
+const AIRCRAFT_CSV_PATH = '/src/assets/aircraft-database-files/aircraft-database-complete-2025-08.csv';
+
+// Will hold icao24 (lowercase) → {typecode, manufacturer, model, category, ...}
+const aircraftDb = {};
+
+// Load and parse the CSV at startup
+function loadAircraftDatabase() {
+  if (typeof Papa === 'undefined') {
+    console.warn('PapaParse is required for aircraft database lookup.');
+    return;
+  }
+  Papa.parse(AIRCRAFT_CSV_PATH, {
+    download: true,
+    header: true,
+    skipEmptyLines: true,
+    worker: true,
+    step: function(row) {
+      // Adjust these field names to match your CSV columns
+      const r = row.data;
+      const icao24 = (r.icao24 || r.ICAO24 || r.hex || '').toLowerCase();
+      if (!icao24) return;
+      aircraftDb[icao24] = {
+        typecode: r.typecode || r.Typecode || r.type || '',
+        manufacturer: r.manufacturer || r.Manufacturer || '',
+        model: r.model || r.Model || '',
+        category: r.category || r.Category || '',
+        // Add more fields as needed
+      };
+    },
+    complete: function() {
+      console.log('[AircraftDB] Loaded', Object.keys(aircraftDb).length, 'entries');
+    }
+  });
+}
+
+// Call this at startup
+loadAircraftDatabase();
+
+// Helper to enrich an aircraft object with DB info if missing
+function enrichAircraftFromDb(a) {
+  const icao24 = (a.icao24 ?? a.hex ?? '').toLowerCase();
+  if (!icao24) return;
+  const db = aircraftDb[icao24];
+  if (!db) return;
+  if (!a.typecode && db.typecode) a.typecode = db.typecode;
+  if (!a.manufacturer && db.manufacturer) a.manufacturer = db.manufacturer;
+  if (!a.model && db.model) a.model = db.model;
+  if (!a.category && db.category) a.category = db.category;
+  // Add more fields as needed
+}
 /**
  * File: src/layers/flights.js
  * Purpose: Live aircraft rendering, selection enrichment, and server-heavy snapshot integration.
@@ -1437,129 +1492,55 @@ function altitudeColor(altFt) { return '#00e676'; } // stub — no longer used f
 // Returns the shape *name* string (key into SHAPES).
 
 function getShape(a) {
+  // Enrich aircraft object with DB info if available
+  enrichAircraftFromDb(a);
   const tc  = (a.typecode ?? '').toUpperCase().trim();
   const cat = (a.category ?? '').toUpperCase().trim();
-  const debugInfo = {
-    typecode: tc,
-    category: cat,
-    typeDescription: (a.typeDescription ?? '').toUpperCase().trim(),
-    wtc: (a.wtc ?? '').toUpperCase().trim(),
-    altFt: a.altFt ?? 0,
-    selected: null,
-    reason: null
-  };
 
   // 1. Exact type designator match
   if (tc && tc in TypeDesignatorIcons) {
-    debugInfo.selected = TypeDesignatorIcons[tc][0];
-    debugInfo.reason = 'TypeDesignatorIcons exact match';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
+    return TypeDesignatorIcons[tc][0];
   }
 
   // 2–4. typeDescription fallback (adsb.fi provides this as a.typeDescription)
-  const td  = debugInfo.typeDescription;
-  const wtc = debugInfo.wtc;
+  const td  = (a.typeDescription ?? '').toUpperCase().trim();
+  const wtc = (a.wtc ?? '').toUpperCase().trim();
 
   if (td.length === 3) {
     // 2. With WTC suffix e.g. "L2J-M"
     if (wtc.length === 1) {
       const key5 = td + '-' + wtc;
-      if (key5 === 'L2J-M' && cat === 'A2') {
-        debugInfo.selected = 'jet_swept';
-        debugInfo.reason = 'Special case: L2J-M + A2';
-        console.log('[getShape]', debugInfo);
-        return debugInfo.selected;
-      }
-      if (key5 in TypeDescriptionIcons) {
-        debugInfo.selected = TypeDescriptionIcons[key5][0];
-        debugInfo.reason = 'TypeDescriptionIcons 5-char key';
-        console.log('[getShape]', debugInfo);
-        return debugInfo.selected;
-      }
+      // Special case: L2J-M + A2 category → swept jet
+      if (key5 === 'L2J-M' && cat === 'A2') return 'jet_swept';
+      if (key5 in TypeDescriptionIcons) return TypeDescriptionIcons[key5][0];
     }
     // 3. Without WTC
-    if (td in TypeDescriptionIcons) {
-      debugInfo.selected = TypeDescriptionIcons[td][0];
-      debugInfo.reason = 'TypeDescriptionIcons 3-char key';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
+    if (td in TypeDescriptionIcons) return TypeDescriptionIcons[td][0];
     // 4. Basic type letter only
     const basicType = td.charAt(0);
-    if (basicType in TypeDescriptionIcons) {
-      debugInfo.selected = TypeDescriptionIcons[basicType][0];
-      debugInfo.reason = 'TypeDescriptionIcons 1-char key';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
+    if (basicType in TypeDescriptionIcons) return TypeDescriptionIcons[basicType][0];
   } else if (td.length === 1 && td in TypeDescriptionIcons) {
-    debugInfo.selected = TypeDescriptionIcons[td][0];
-    debugInfo.reason = 'TypeDescriptionIcons 1-char key (else)';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
+    return TypeDescriptionIcons[td][0];
   }
 
   // 5. ADS-B category
-  if (cat && cat in CategoryIcons) {
-    debugInfo.selected = CategoryIcons[cat][0];
-    debugInfo.reason = 'CategoryIcons';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
-  }
+  if (cat && cat in CategoryIcons) return CategoryIcons[cat][0];
 
   // Regex catch-alls for common type-code patterns not in explicit tables
   if (tc) {
-    if (/^H\d/.test(tc) || /^S(6|7|9)\d/.test(tc) || /^(EC|BO|BK|AS|AW|MD9)/.test(tc)) {
-      debugInfo.selected = 'helicopter';
-      debugInfo.reason = 'Regex: helicopter';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
-    if (/^(B74|B77|A38|A34)/.test(tc)) {
-      debugInfo.selected = 'heavy_4e';
-      debugInfo.reason = 'Regex: heavy_4e';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
-    if (/^(B76|B78|A3[03]|A35)/.test(tc)) {
-      debugInfo.selected = 'heavy_2e';
-      debugInfo.reason = 'Regex: heavy_2e';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
-    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(tc)) {
-      debugInfo.selected = 'airliner';
-      debugInfo.reason = 'Regex: airliner';
-      console.log('[getShape]', debugInfo);
-      return debugInfo.selected;
-    }
+    if (/^H\d/.test(tc) || /^S(6|7|9)\d/.test(tc) || /^(EC|BO|BK|AS|AW|MD9)/.test(tc))
+      return 'helicopter';
+    if (/^(B74|B77|A38|A34)/.test(tc)) return 'heavy_4e';
+    if (/^(B76|B78|A3[03]|A35)/.test(tc)) return 'heavy_2e';
+    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(tc)) return 'airliner';
   }
 
   // 6. Altitude proxy (absolute last resort)
-  const alt = debugInfo.altFt;
-  if (alt > 25000) {
-    debugInfo.selected = 'airliner';
-    debugInfo.reason = 'Altitude > 25000';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
-  }
-  if (alt > 5000)  {
-    debugInfo.selected = 'twin_large';
-    debugInfo.reason = 'Altitude > 5000';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
-  }
-  if (alt > 0)     {
-    debugInfo.selected = 'cessna';
-    debugInfo.reason = 'Altitude > 0';
-    console.log('[getShape]', debugInfo);
-    return debugInfo.selected;
-  }
-  debugInfo.selected = 'unknown';
-  debugInfo.reason = 'Default';
-  console.log('[getShape]', debugInfo);
-  return debugInfo.selected;
+  const alt = a.altFt ?? 0;
+  if (alt > 25000) return 'airliner';
+  if (alt > 5000)  return 'twin_large';
+  if (alt > 0)     return 'cessna';
+  return 'unknown';
 }
 
 // ── Build a data URI for a given shape + color ────────────────────────────────
