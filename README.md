@@ -26,7 +26,7 @@ All of it running in a browser tab. No classified clearances required.
 - **Street-Level Traffic** — live Google traffic-aware flow (Routes API) with automatic OpenStreetMap particle fallback, terrain-aligned to roads
 - **CCTV Integration** — tile-streamed global public camera markers with live snapshot/video inspection panels
 - **Airspace + Connectivity Overlays** — FAA TFR polygons, GPSJam interference zones, and IODA internet blackout polygons with click-to-inspect metadata
-- **4D Timeline / Replay** — scrub through archived snapshots of all data layers *(Phase 7 — stub, not yet implemented)*
+- **4D Timeline / Replay** — scrub through archived snapshots of all data layers *(Phase 11 — stub, not yet implemented)*
 
 ---
 
