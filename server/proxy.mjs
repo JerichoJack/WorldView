@@ -4855,6 +4855,7 @@ const server = http.createServer(async (req, res) => {
         cacheHit: payload.cacheHit,
       }));
     } catch (err) {
+      console.error('[proxy] /api/internet error:', err);
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'internet request failed' }));
     }
