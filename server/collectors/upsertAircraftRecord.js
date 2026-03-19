@@ -6,6 +6,8 @@ import path from 'path';
 import { parse as csvParse } from 'csv-parse/sync';
 import { stringify as csvStringify } from 'csv-stringify/sync';
 
+const __filename = new URL(import.meta.url).pathname;
+const __dirname = path.dirname(__filename);
 const DB_PATH = path.resolve(__dirname, '../public/aircraft-database-files/aircraftDatabase.csv');
 
 /**
