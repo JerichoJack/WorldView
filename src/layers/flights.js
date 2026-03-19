@@ -2724,6 +2724,9 @@ function renderAircraft(viewer, aircraft) {
         const effectiveTypecode = a.typecode || enrichedTypecodeMap.get(a.id) || '';
         setProp(entity.properties, 'typecode', effectiveTypecode);
         setProp(entity.properties, 'classification', classification);
+        // Set enriched icon and iconScale from server, if present
+        setProp(entity.properties, 'icon', a.icon ?? '');
+        setProp(entity.properties, 'iconScale', typeof a.iconScale === 'number' ? a.iconScale : 1);
       }
     } else {
       const entity = viewer.entities.add({
@@ -2770,6 +2773,9 @@ function renderAircraft(viewer, aircraft) {
           typecode:       a.typecode || enrichedTypecodeMap.get(a.id) || '',
           provider:       ACTIVE_PROVIDER,
           classification: classification,
+          // Set enriched icon and iconScale from server, if present
+          icon:           a.icon ?? '',
+          iconScale:      typeof a.iconScale === 'number' ? a.iconScale : 1,
         },
       });
       entityMap.set(a.id, entity);
