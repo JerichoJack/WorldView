@@ -1340,13 +1340,28 @@ function loadAircraftDatabaseSync() {
 function enrichAircraftFromDb(a) {
   const icao24 = (a.icao24 ?? a.hex ?? '').toLowerCase();
   if (!icao24) return;
+  // Aggressively fill typecode from all possible sources
+  a.typecode = (
+    a.typecode || a.Typecode || a.t || a.type || a.aircraftType || ''
+  ).toString().toUpperCase().trim();
+
+  // Try to fill from aircraftDb if still missing
   const db = aircraftDb[icao24];
   if (db) {
-    if (!a.typecode && db.typecode) a.typecode = db.typecode;
+    if (!a.typecode && db.typecode) a.typecode = db.typecode.toUpperCase();
     if (!a.manufacturer && db.manufacturer) a.manufacturer = db.manufacturer;
     if (!a.model && db.model) a.model = db.model;
     if (!a.category && db.category) a.category = db.category;
   }
+
+  // Try to infer typecode from model or manufacturer if still missing
+  if (!a.typecode && a.model && typeof a.model === 'string') {
+    // Example: try to extract typecode from model string (e.g., "B738" in "Boeing 737-800 (B738)")
+    const m = a.model.match(/\(([A-Z0-9]{3,5})\)/);
+    if (m) a.typecode = m[1].toUpperCase();
+  }
+
+  // Try to fill from typeDb if possible
   const typecode = (a.typecode || '').toUpperCase();
   const typeInfo = typeDb[typecode];
   if (typeInfo) {
