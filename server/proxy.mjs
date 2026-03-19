@@ -27,7 +27,7 @@ import { cellToBoundary } from 'h3-js';
 import { feature as topojsonFeature } from 'topojson-client';
 
 // ── Aircraft DB (server-side enrichment) ──
-import csvParse from 'csv-parse/sync';
+import { parse as csvParse } from 'csv-parse/sync';
 
 const AIRCRAFT_CSV_PATHS = [
   path.resolve(process.cwd(), 'public', 'aircraft-database-files', 'aircraftDatabase.csv'),
@@ -43,7 +43,7 @@ function loadAircraftDatabaseSync() {
   // aircraftDatabase.csv (by icao24)
   try {
     const csv1 = fs.readFileSync(AIRCRAFT_CSV_PATHS[0], 'utf8');
-    const rows1 = csvParse.parse(csv1, { columns: true, skip_empty_lines: true });
+    const rows1 = csvParse(csv1, { columns: true, skip_empty_lines: true });
     for (const r of rows1) {
       const icao24 = (r.icao24 || r.ICAO24 || r.hex || '').toLowerCase();
       if (!icao24) continue;
@@ -60,7 +60,7 @@ function loadAircraftDatabaseSync() {
   // aircraftTypes.csv (by typecode)
   try {
     const csv2 = fs.readFileSync(AIRCRAFT_CSV_PATHS[1], 'utf8');
-    const rows2 = csvParse.parse(csv2, { columns: true, skip_empty_lines: true });
+    const rows2 = csvParse(csv2, { columns: true, skip_empty_lines: true });
     for (const r of rows2) {
       const typecode = (r.Designator || r.typecode || r.Typecode || r.type || '').toUpperCase();
       if (!typecode) continue;
@@ -79,7 +79,7 @@ function loadAircraftDatabaseSync() {
   // manufacturers.csv (by code)
   try {
     const csv3 = fs.readFileSync(AIRCRAFT_CSV_PATHS[2], 'utf8');
-    const rows3 = csvParse.parse(csv3, { columns: true, skip_empty_lines: true });
+    const rows3 = csvParse(csv3, { columns: true, skip_empty_lines: true });
     for (const r of rows3) {
       const code = (r.Code || '').toUpperCase();
       if (!code) continue;
