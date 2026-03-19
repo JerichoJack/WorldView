@@ -2356,7 +2356,7 @@ export async function initFlights(viewer) {
         setServerSnapshotLayerEnabled('flights', enabled && isAnyClassificationActive());
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
-          const aircraftClassification = state?.aircraftClassification ?? 'commercial';
+          const aircraftClassification = state?.aircraftClassification ?? ('commercial', 'military', 'other', 'emergency', 'ground');
           e.show = shouldShowFlight(aircraftClassification);
         });
         applyFlatIconVisibility();
@@ -2367,7 +2367,7 @@ export async function initFlights(viewer) {
           aircraftClassificationFilters[classKey] = filterEnabled;
           entityMap.forEach((e, icaoHex) => {
             const state = trackStateMap.get(icaoHex);
-            const aircraftClassification = state?.aircraftClassification ?? 'commercial';
+            const aircraftClassification = state?.aircraftClassification ?? ('commercial', 'military', 'other', 'emergency', 'ground');
             e.show = shouldShowFlight(aircraftClassification);
           });
           applyFlatIconVisibility();
@@ -2398,7 +2398,7 @@ export async function initFlights(viewer) {
       if (enabled && isAnyClassificationActive()) fetchAndRender(viewer);
       entityMap.forEach((e, icaoHex) => {
         const state = trackStateMap.get(icaoHex);
-        const aircraftClassification = state?.aircraftClassification ?? 'commercial';
+        const aircraftClassification = state?.aircraftClassification ?? ('commercial', 'military', 'other', 'emergency', 'ground');
         e.show = shouldShowFlight(aircraftClassification);
       });
       applyFlatIconVisibility();
@@ -2410,7 +2410,7 @@ export async function initFlights(viewer) {
         // Update visibility of all entities
         entityMap.forEach((e, icaoHex) => {
           const state = trackStateMap.get(icaoHex);
-          const aircraftClassification = state?.aircraftClassification ?? 'commercial';
+          const aircraftClassification = state?.aircraftClassification ?? ('commercial', 'military', 'other', 'emergency', 'ground');
           e.show = shouldShowFlight(aircraftClassification);
         });
         applyFlatIconVisibility();
@@ -2437,7 +2437,7 @@ export function setFollowMode(icaoHex, active) {
   if (active) {
     hideAllFlatIcons = true;
     // Derive color from stored properties so military/commercial/other colors match
-    const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
+    const classification = entity.properties?.classification?.getValue?.() ?? ('commercial', 'military', 'other', 'emergency', 'ground');
     const color    = classificationColor(classification);
     const category = entity.properties?.category?.getValue?.() ?? '';
     const typecode = entity.properties?.typecode?.getValue?.() ?? '';
