@@ -1409,6 +1409,11 @@ function classifyAircraft(a) {
     if (isLikelyCommercialCallsign(cs)) return 'commercial';
   }
 
+  // 6) If typecode is a known airliner/jet, treat as commercial
+  if (typecode && TypeDesignatorIcons[typecode]) {
+    return 'commercial';
+  }
+
   // If not commercial, military, emergency, or ground, classify as 'other'
   return 'other';
 }
@@ -1417,10 +1422,11 @@ function classificationColor(classification) {
   switch ((classification ?? 'commercial').toLowerCase()) {
     case 'emergency': return '#ef4444';
     case 'military': return '#f97316';
-    case 'ground': return '#6b7280';
-    case 'commercial':
+    case 'ground': return '#93944e';
+    case 'commercial': return '#00e676'; // green
+    case 'other': return '#2196f3'; // blue
     default:
-      return '#60a5fa';
+      return '#9e9e9e'; // grey fallback
   }
 }
 
@@ -2852,9 +2858,14 @@ export function setFlightGlow(icaoHex, active) {
     // Get current color and shape from stored properties
     const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
     const color    = classificationColor(classification);
-    const category = entity.properties?.category?.getValue?.() ?? '';
-    const typecode = entity.properties?.typecode?.getValue?.() ?? '';
-    const shape    = getShape({ category, typecode });
+    // Prefer enriched icon from properties, fallback to old logic
+    const iconProp = entity.properties?.icon?.getValue?.();
+    let shape = iconProp;
+    if (!shape) {
+      const category = entity.properties?.category?.getValue?.() ?? '';
+      const typecode = entity.properties?.typecode?.getValue?.() ?? '';
+      shape = getShape({ category, typecode });
+    }
 
     // Build glowing SVG and apply it
     const glowIcon = buildGlowSvgUri(shape, color);
