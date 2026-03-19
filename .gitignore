@@ -18,3 +18,4 @@ scripts/Testing/Aviationstack-Basic-API-Data.ps1
 scripts/Testing/check_unmapped_type_codes.py
 scripts/Testing/OpenSky-Basic-API-Data.ps1
 scripts/Testing/OpenSky-Enriched-API-Data.ps1
+missing_typecodes.txt
