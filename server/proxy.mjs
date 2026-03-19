@@ -4788,6 +4788,7 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'nofly_gps request failed' }));
+      return;
     }
   } else {
     res.writeHead(404);
@@ -4864,6 +4865,7 @@ const server = http.createServer(async (req, res) => {
       console.error('[proxy] /api/internet error:', err);
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'internet request failed' }));
+      return;
     }
   } else if (url === '/api/traffic/google') {
     const parts = (query.bounds ?? '').split(',').map(Number);
@@ -4879,6 +4881,7 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'traffic request failed' }));
+      return;
     }
   } else if (url === '/api/marine/snapshot') {
     const parts = (query.bounds ?? '').split(',').map(Number);
@@ -4894,6 +4897,7 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'marine snapshot failed' }));
+      return;
     }
   } else if (url === '/api/satellite-imagery/health') {
     res.writeHead(200);
@@ -4980,6 +4984,7 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: err?.message ?? 'camera snapshot failed' }));
+      return;
     }
   } else if (url === '/api/world/snapshot') {
     const parts = (query.bounds ?? '').split(',').map(Number);
@@ -5077,6 +5082,7 @@ const server = http.createServer(async (req, res) => {
   } else {
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'Not found' }));
+    return;
   }
 });
 
