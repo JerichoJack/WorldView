@@ -2080,7 +2080,7 @@ function publishSystemStatus(msg, level = 'ok', key = `${level}:${msg}`) {
 function applyFlatIconVisibility() {
   for (const [id, entity] of entityMap) {
     const state = trackStateMap.get(id);
-    const aircraftClassification = state?.aircraftClassification ?? 'commercial';
+    const aircraftClassification = state?.aircraftClassification ?? ('commercial', 'millitary', 'other', 'emergency', 'ground');
     const shouldShow = shouldShowFlight(aircraftClassification) && !hideAllFlatIcons;
     if (entity.billboard) {
       entity.billboard.show = new Cesium.ConstantProperty(shouldShow);
