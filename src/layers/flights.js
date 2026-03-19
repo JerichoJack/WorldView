@@ -1440,54 +1440,13 @@ function altitudeColor(altFt) { return '#00e676'; } // stub — no longer used f
 // 6. Altitude proxy (last resort)
 // Returns the shape *name* string (key into SHAPES).
 
+// Client now expects aircraft objects to have 'icon' (shape name) and 'iconScale' fields from the server.
+// If missing, fallback to 'unknown' and scale 1.
 function getShape(a) {
-  const tc  = (a.typecode ?? '').toUpperCase().trim();
-  const cat = (a.category ?? '').toUpperCase().trim();
-
-  // 1. Exact type designator match
-  if (tc && tc in TypeDesignatorIcons) {
-    return TypeDesignatorIcons[tc][0];
-  }
-
-  // 2–4. typeDescription fallback (adsb.fi provides this as a.typeDescription)
-  const td  = (a.typeDescription ?? '').toUpperCase().trim();
-  const wtc = (a.wtc ?? '').toUpperCase().trim();
-
-  if (td.length === 3) {
-    // 2. With WTC suffix e.g. "L2J-M"
-    if (wtc.length === 1) {
-      const key5 = td + '-' + wtc;
-      // Special case: L2J-M + A2 category → swept jet
-      if (key5 === 'L2J-M' && cat === 'A2') return 'jet_swept';
-      if (key5 in TypeDescriptionIcons) return TypeDescriptionIcons[key5][0];
-    }
-    // 3. Without WTC
-    if (td in TypeDescriptionIcons) return TypeDescriptionIcons[td][0];
-    // 4. Basic type letter only
-    const basicType = td.charAt(0);
-    if (basicType in TypeDescriptionIcons) return TypeDescriptionIcons[basicType][0];
-  } else if (td.length === 1 && td in TypeDescriptionIcons) {
-    return TypeDescriptionIcons[td][0];
-  }
-
-  // 5. ADS-B category
-  if (cat && cat in CategoryIcons) return CategoryIcons[cat][0];
-
-  // Regex catch-alls for common type-code patterns not in explicit tables
-  if (tc) {
-    if (/^H\d/.test(tc) || /^S(6|7|9)\d/.test(tc) || /^(EC|BO|BK|AS|AW|MD9)/.test(tc))
-      return 'helicopter';
-    if (/^(B74|B77|A38|A34)/.test(tc)) return 'heavy_4e';
-    if (/^(B76|B78|A3[03]|A35)/.test(tc)) return 'heavy_2e';
-    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(tc)) return 'airliner';
-  }
-
-  // 6. Altitude proxy (absolute last resort)
-  const alt = a.altFt ?? 0;
-  if (alt > 25000) return 'airliner';
-  if (alt > 5000)  return 'twin_large';
-  if (alt > 0)     return 'cessna';
-  return 'unknown';
+  return a.icon || 'unknown';
+}
+function getIconScale(a) {
+  return typeof a.iconScale === 'number' ? a.iconScale : 1;
 }
 
 // ── Build a data URI for a given shape + color ────────────────────────────────
