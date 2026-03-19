@@ -12,3 +12,9 @@ package-lock.json
 # Generated camera database (rebuild with: node server/collectors/collectCameras.mjs)
 public/camera-data/
 server/cache/world-snapshot-cache.json
+scripts/outputs/opensky_enriched_snapshot.json
+scripts/Testing/ADSBLOL-Basic-API-Data.ps1
+scripts/Testing/Aviationstack-Basic-API-Data.ps1
+scripts/Testing/check_unmapped_type_codes.py
+scripts/Testing/OpenSky-Basic-API-Data.ps1
+scripts/Testing/OpenSky-Enriched-API-Data.ps1

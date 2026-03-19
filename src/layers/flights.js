@@ -2,25 +2,37 @@
 // Requires PapaParse: npm install papaparse OR include via CDN
 // Example CDN: <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
-// Path to your CSV file (choose the latest or preferred one)
-const AIRCRAFT_CSV_PATH = '/aircraft-database-files/aircraft-database-complete-2025-08.csv';
+// Paths to all CSV files in the aircraft database folder
+const AIRCRAFT_CSV_PATHS = [
+  '/aircraft-database-files/aircraftDatabase.csv',
+  '/aircraft-database-files/aircraftTypes.csv',
+  '/aircraft-database-files/manufacturers.csv',
+];
 
 // Will hold icao24 (lowercase) → {typecode, manufacturer, model, category, ...}
 const aircraftDb = {};
+// Will hold typecode → type info (from aircraftTypes.csv)
+const typeDb = {};
+// Will hold manufacturer code → manufacturer name (from manufacturers.csv)
+const manufacturerDb = {};
 
-// Load and parse the CSV at startup
+
+// Load and parse all CSVs at startup
 function loadAircraftDatabase() {
   if (typeof Papa === 'undefined') {
     console.warn('PapaParse is required for aircraft database lookup.');
     return;
   }
-  Papa.parse(AIRCRAFT_CSV_PATH, {
+
+  let loaded = 0;
+  const total = AIRCRAFT_CSV_PATHS.length;
+
+  // Parse aircraftDatabase.csv (by icao24)
+  Papa.parse(AIRCRAFT_CSV_PATHS[0], {
     download: true,
     header: true,
     skipEmptyLines: true,
-    // worker: true,
     step: function(row) {
-      // Adjust these field names to match your CSV columns
       const r = row.data;
       const icao24 = (r.icao24 || r.ICAO24 || r.hex || '').toLowerCase();
       if (!icao24) return;
@@ -33,9 +45,56 @@ function loadAircraftDatabase() {
       };
     },
     complete: function() {
-      console.log('[AircraftDB] Loaded', Object.keys(aircraftDb).length, 'entries');
+      loaded++;
+      if (loaded === total) onAllCsvsLoaded();
     }
   });
+
+  // Parse aircraftTypes.csv (by typecode)
+  Papa.parse(AIRCRAFT_CSV_PATHS[1], {
+    download: true,
+    header: true,
+    skipEmptyLines: true,
+    step: function(row) {
+      const r = row.data;
+      const typecode = (r.Designator || r.typecode || r.Typecode || r.type || '').toUpperCase();
+      if (!typecode) return;
+      typeDb[typecode] = {
+        description: r.Description || r.AircraftDescription || '',
+        engineCount: r.EngineCount || '',
+        engineType: r.EngineType || '',
+        manufacturerCode: r.ManufacturerCode || '',
+        modelFullName: r.ModelFullName || '',
+        wtc: r.WTC || '',
+      };
+    },
+    complete: function() {
+      loaded++;
+      if (loaded === total) onAllCsvsLoaded();
+    }
+  });
+
+  // Parse manufacturers.csv (by code)
+  Papa.parse(AIRCRAFT_CSV_PATHS[2], {
+    download: true,
+    header: true,
+    skipEmptyLines: true,
+    step: function(row) {
+      const r = row.data;
+      const code = (r.Code || '').toUpperCase();
+      if (!code) return;
+      manufacturerDb[code] = r.Name || '';
+    },
+    complete: function() {
+      loaded++;
+      if (loaded === total) onAllCsvsLoaded();
+    }
+  });
+}
+
+// Called when all CSVs are loaded
+function onAllCsvsLoaded() {
+  console.log('[AircraftDB] Loaded', Object.keys(aircraftDb).length, 'aircraft,', Object.keys(typeDb).length, 'types,', Object.keys(manufacturerDb).length, 'manufacturers');
 }
 
 // Call this at startup
@@ -46,12 +105,32 @@ function enrichAircraftFromDb(a) {
   const icao24 = (a.icao24 ?? a.hex ?? '').toLowerCase();
   if (!icao24) return;
   const db = aircraftDb[icao24];
-  if (!db) return;
-  if (!a.typecode && db.typecode) a.typecode = db.typecode;
-  if (!a.manufacturer && db.manufacturer) a.manufacturer = db.manufacturer;
-  if (!a.model && db.model) a.model = db.model;
-  if (!a.category && db.category) a.category = db.category;
-  // Add more fields as needed
+  if (db) {
+    if (!a.typecode && db.typecode) a.typecode = db.typecode;
+    if (!a.manufacturer && db.manufacturer) a.manufacturer = db.manufacturer;
+    if (!a.model && db.model) a.model = db.model;
+    if (!a.category && db.category) a.category = db.category;
+    // Add more fields as needed
+  }
+
+  // Enrich with type info if typecode is present
+  const typecode = (a.typecode || '').toUpperCase();
+  const typeInfo = typeDb[typecode];
+  if (typeInfo) {
+    if (!a.engineCount && typeInfo.engineCount) a.engineCount = typeInfo.engineCount;
+    if (!a.engineType && typeInfo.engineType) a.engineType = typeInfo.engineType;
+    if (!a.modelFullName && typeInfo.modelFullName) a.modelFullName = typeInfo.modelFullName;
+    if (!a.wtc && typeInfo.wtc) a.wtc = typeInfo.wtc;
+    if (!a.typeDescription && typeInfo.description) a.typeDescription = typeInfo.description;
+    if (!a.manufacturer && typeInfo.manufacturerCode && manufacturerDb[typeInfo.manufacturerCode]) {
+      a.manufacturer = manufacturerDb[typeInfo.manufacturerCode];
+    }
+  }
+
+  // Enrich manufacturer name if manufacturer code is present
+  if (a.manufacturer && manufacturerDb[a.manufacturer.toUpperCase()]) {
+    a.manufacturerFull = manufacturerDb[a.manufacturer.toUpperCase()];
+  }
 }
 /**
  * File: src/layers/flights.js
