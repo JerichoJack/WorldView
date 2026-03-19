@@ -1,10 +1,10 @@
 // This script appends or updates aircraft info in aircraftDatabase.csv
 // Usage: Call from server or via an API endpoint when new HUD info is available
 
-const fs = require('fs');
-const path = require('path');
-const csvParse = require('csv-parse/sync');
-const csvStringify = require('csv-stringify/sync');
+import fs from 'fs';
+import path from 'path';
+import csvParse from 'csv-parse/sync';
+import csvStringify from 'csv-stringify/sync';
 
 const DB_PATH = path.resolve(__dirname, '../public/aircraft-database-files/aircraftDatabase.csv');
 
@@ -12,7 +12,7 @@ const DB_PATH = path.resolve(__dirname, '../public/aircraft-database-files/aircr
  * Upsert an aircraft record in the CSV database.
  * @param {Object} info - { icao24, registration, typecode, manufacturer, model, operator, country }
  */
-function upsertAircraftRecord(info) {
+export function upsertAircraftRecord(info) {
   if (!info.icao24) throw new Error('icao24 is required');
   let rows = [];
   let headers = ['icao24','registration','typecode','manufacturer','model','operator','country'];
@@ -33,5 +33,3 @@ function upsertAircraftRecord(info) {
   const csvOut = csvStringify.stringify(rows, { header: true, columns: headers });
   fs.writeFileSync(DB_PATH, csvOut, 'utf8');
 }
-
-module.exports = { upsertAircraftRecord };
