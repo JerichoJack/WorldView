@@ -1363,8 +1363,8 @@ function enrichAircraftFromDb(a) {
   // --- Icon/Scale enrichment ---
   let iconEntry = typeDesignatorIcons[typecode];
   if (iconEntry) {
-    a.icon = iconEntry.icon;
-    a.iconScale = iconEntry.scale;
+    a.icon = iconEntry[0];
+    a.iconScale = iconEntry[1];
   } else if (a.typeDescription && TypeDescriptionIcons[a.typeDescription]) {
     const descEntry = TypeDescriptionIcons[a.typeDescription];
     a.icon = descEntry[0];
