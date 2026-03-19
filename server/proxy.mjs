@@ -4810,8 +4810,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  res.setHeader('Content-Type', 'application/json');
-
   if (url === '/api/flights') {
     await handleFlights(query, res);
   } else if (url === '/api/cameras/stream/health') {
