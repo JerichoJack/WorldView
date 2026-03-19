@@ -2510,21 +2510,32 @@ function mapProxyAircraft(aircraft) {
       const onGround = a.alt_baro === 'ground' || a.gnd === true || a.on_ground === true;
       const altFt = onGround ? 0 : numOr(a.alt_baro ?? a.alt_geom, 0);
       return {
-      id:       (a.hex ?? '').toLowerCase(),
-      callsign: (a.flight ?? a.r ?? '').trim(),
-      lat:      a.lat,
-      lon:      a.lon,
-      altFt,
-      heading:  numOr(a.track ?? a.true_heading, 0),
-      kts:      numOr(a.gs, 0),
-      category: a.category ?? '',
-      typecode: (a.t ?? a.type ?? '').toUpperCase(),
-      squawk:   a.squawk ?? '',
-      emergency: a.emergency ?? 'none',
-      onGround,
-      dbFlags:  a.dbFlags ?? 0,
-      vert:     numOr(a.baro_rate ?? a.geom_rate, 0),
-    };
+        id:         (a.hex ?? '').toLowerCase(),
+        callsign:   (a.flight ?? a.r ?? '').trim(),
+        lat:        a.lat,
+        lon:        a.lon,
+        altFt,
+        heading:    numOr(a.track ?? a.true_heading, 0),
+        kts:        numOr(a.gs, 0),
+        category:   a.category ?? '',
+        typecode:   (a.t ?? a.type ?? '').toUpperCase(),
+        squawk:     a.squawk ?? '',
+        emergency:  a.emergency ?? 'none',
+        onGround,
+        dbFlags:    a.dbFlags ?? 0,
+        vert:       numOr(a.baro_rate ?? a.geom_rate, 0),
+        // Pass through server-enriched icon fields
+        icon:       a.icon ?? undefined,
+        iconScale:  typeof a.iconScale === 'number' ? a.iconScale : undefined,
+        // Optionally pass through other enrichment fields as needed
+        manufacturer: a.manufacturer ?? undefined,
+        model:      a.model ?? undefined,
+        wtc:        a.wtc ?? undefined,
+        typeDescription: a.typeDescription ?? undefined,
+        engineCount: a.engineCount ?? undefined,
+        engineType:  a.engineType ?? undefined,
+        modelFullName: a.modelFullName ?? undefined,
+      };
     })
     .filter(a => a.id);
 }
