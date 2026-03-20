@@ -2351,7 +2351,7 @@ async function fetchAircraftInfo(icao, callsign) {
   } else {
     let proxyFailed = false;
     try {
-      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/?icao=${icao}${callsign}`;
+      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/?icao=${icao}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
       console.log('[fetchAircraftInfo] Proxy request:', url, 'Status:', r.status);
       if (r.ok) {
