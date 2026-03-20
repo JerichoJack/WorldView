@@ -2353,8 +2353,10 @@ async function fetchAircraftInfo(icao, callsign) {
     try {
       const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/${icao}${callsign ? `?icao=${encodeURIComponent(callsign)}` : ''}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      console.log('[fetchAircraftInfo] Proxy request:', url, 'Status:', r.status);
       if (r.ok) {
         const d = await r.json();
+        console.log('[fetchAircraftInfo] Proxy response:', d);
         if (d && d.ok && d.result) {
           // Map common fields from proxy result
           const a = d.result;
