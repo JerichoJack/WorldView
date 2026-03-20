@@ -2385,31 +2385,17 @@ async function fetchAircraftInfo(icao, callsign) {
       console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO: ${icao}`, err);
     }
 
-    // Fallback to adsbdb.com if proxy failed
+    // Fallback: If proxy failed, try to fill from local DB (if available) and mark as DB-only
+    let dbOnly = false;
     if (proxyFailed) {
-      try {
-        const r = await fetch(`https://api.adsbdb.com/v0/aircraft/icao/${icao}`, { signal: AbortSignal.timeout(5000) });
-        if (r.ok) {
-          const d = await r.json();
-          const a = d.response;
-          if (a) {
-            info.registration = a.registration ?? null;
-            info.typecode     = a.typecode ?? a.icao_type ?? null;
-            info.typeDesc     = a.type ?? a.type_description ?? null;
-            info.operator     = a.operator ?? a.owner ?? null;
-            info.country      = a.country ?? a.country_iso_name ?? null;
-            info.year         = a.year_built ?? null;
-            info.manufacturer = a.manufacturer ?? null;
-            info.model        = a.model ?? null;
-          }
-        } else {
-          console.warn(`[fetchAircraftInfo] adsbdb.com error for ICAO: ${icao}, status: ${r.status}`);
-        }
-      } catch (err) {
-        console.warn(`[fetchAircraftInfo] adsbdb.com fetch failed for ICAO: ${icao}`, err);
+      // Try to get from cache (which is filled from DB on flight load)
+      if (aircraftCache.has(icao)) {
+        Object.assign(info, aircraftCache.get(icao));
+        dbOnly = true;
       }
+      // Optionally, could fetch from a local endpoint if needed
     }
-    aircraftCache.set(icao, { ...info });
+    aircraftCache.set(icao, { ...info, dbOnly });
   }
 
   // ── 2. Live route lookup by callsign (short TTL cache) ────────────────────
@@ -2472,7 +2458,7 @@ async function fetchAircraftInfo(icao, callsign) {
 function renderPanel(panel, data, viewer, entity) {
   const {
     icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification,
-    registration, typecode, typeDesc, operator, route, country, year, loading
+    registration, typecode, typeDesc, operator, route, country, year, loading, dbOnly
   } = data;
 
   const altFtStr   = Number.isFinite(altFt) ? `${Math.round(altFt).toLocaleString()} ft`  : '—';
@@ -2514,6 +2500,7 @@ function renderPanel(panel, data, viewer, entity) {
 
     <div style="padding:10px 16px">
       ${loading ? `<div style="opacity:0.45;font-size:10px;margin-bottom:8px">Fetching aircraft data...</div>` : ''}
+      ${dbOnly ? `<div style="color:#ffb300;font-size:11px;margin-bottom:8px">Online Info Update Failed: Info provided by Server Database</div>` : ''}
 
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         ${row('Type',     typeDisplay)}
