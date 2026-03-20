@@ -2227,12 +2227,14 @@ function initEntityPicker(viewer) {
           operator: info.operator || '',
           country: info.country || '',
         };
-        // Always POST all required fields (icao24, typecode, model) with fallback values
-        fetch(`${BACKEND_BASE_URL}/api/aircraftdb`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(postData),
-        });
+        // Only POST if at least one of typecode or model is non-empty (to match backend requirements)
+        if ((postData.typecode && postData.typecode !== '') || (postData.model && postData.model !== '')) {
+          fetch(`${BACKEND_BASE_URL}/api/aircraftdb`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(postData),
+          });
+        }
       } catch (err) {
         // Silent fail; do not block UI
       }
