@@ -2346,12 +2346,12 @@ async function fetchAircraftInfo(icao, callsign) {
   const info = { registration: null, typecode: null, typeDesc: null, operator: null, route: null, country: null, year: null, manufacturer: null, model: null };
 
   // 1. Static aircraft info (cached permanently per ICAO24)
-  if (aircraftCache.has(icao)) {
-    Object.assign(info, aircraftCache.get(icao));
+  if (aircraftCache.has(icao24)) {
+    Object.assign(info, aircraftCache.get(icao24));
   } else {
     let proxyFailed = false;
     try {
-      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/?icao=${icao}`;
+      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/?icao=${icao24}${callsign ? `&callsign=${encodeURIComponent(callsign)}` : ''}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
       console.log('[fetchAircraftInfo] Proxy request:', url, 'Status:', r.status);
       if (r.ok) {
@@ -2375,27 +2375,27 @@ async function fetchAircraftInfo(icao, callsign) {
         proxyFailed = true;
         if (r.status === 404) {
           // Log for debugging
-          console.warn(`[fetchAircraftInfo] Proxy 404 for ICAO: ${icao}`);
+          console.warn(`[fetchAircraftInfo] Proxy 404 for ICAO: ${icao24}`);
         } else {
-          console.warn(`[fetchAircraftInfo] Proxy error for ICAO: ${icao}, status: ${r.status}`);
+          console.warn(`[fetchAircraftInfo] Proxy error for ICAO: ${icao24}, status: ${r.status}`);
         }
       }
     } catch (err) {
       proxyFailed = true;
-      console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO: ${icao}`, err);
+      console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO: ${icao24}`, err);
     }
 
     // Fallback: If proxy failed, try to fill from local DB (if available) and mark as DB-only
     let dbOnly = false;
     if (proxyFailed) {
       // Try to get from cache (which is filled from DB on flight load)
-      if (aircraftCache.has(icao)) {
-        Object.assign(info, aircraftCache.get(icao));
+      if (aircraftCache.has(icao24)) {
+        Object.assign(info, aircraftCache.get(icao24));
         dbOnly = true;
       }
       // Optionally, could fetch from a local endpoint if needed
     }
-    aircraftCache.set(icao, { ...info, dbOnly });
+    aircraftCache.set(icao24, { ...info, dbOnly });
   }
 
   // ── 2. Live route lookup by callsign (short TTL cache) ────────────────────
