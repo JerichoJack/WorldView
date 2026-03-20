@@ -5056,12 +5056,16 @@ const server = http.createServer(async (req, res) => {
         },
       };
 
-      res.writeHead(200);
-      res.end(JSON.stringify(payload));
+      if (!res.headersSent) {
+        res.writeHead(200);
+        res.end(JSON.stringify(payload));
+      }
       return;
     } catch (err) {
-      res.writeHead(502);
-      res.end(JSON.stringify({ error: err?.message ?? 'world snapshot failed' }));
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end(JSON.stringify({ error: err?.message ?? 'world snapshot failed' }));
+      }
       return;
     }
   } else if (url === '/health') {
