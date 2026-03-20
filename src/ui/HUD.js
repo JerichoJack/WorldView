@@ -2341,50 +2341,32 @@ const routeCache    = new Map(); // callsign → { route, operator, ts }
 const ROUTE_TTL     = 5 * 60 * 1000; // 5 minutes
 
 async function fetchAircraftInfo(icao, callsign) {
-  const info = { registration: null, typecode: null, typeDesc: null, operator: null, route: null, country: null, year: null };
 
-  // ── 1. Static aircraft info (cached permanently per ICAO) ──────────────────
+  const info = { registration: null, typecode: null, typeDesc: null, operator: null, route: null, country: null, year: null, manufacturer: null, model: null };
+
+  // 1. Static aircraft info (cached permanently per ICAO)
   if (aircraftCache.has(icao)) {
     Object.assign(info, aircraftCache.get(icao));
   } else {
-    // Try adsbdb.com first
     try {
-      const r = await fetch(`https://api.adsbdb.com/v0/aircraft/${icao}`, { signal: AbortSignal.timeout(5000) });
+      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/${icao}${callsign ? `?callsign=${encodeURIComponent(callsign)}` : ''}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
       if (r.ok) {
         const d = await r.json();
-        const a = d.response?.aircraft;
-        if (a) {
-          // type_code = ICAO designator (e.g. "B38M"), manufacturer = brand (e.g. "BOEING")
-          info.typecode = a.type_code ?? null;
-          const mfr     = (a.manufacturer ?? '').trim();
-          // typeDesc shows the manufacturer only — typecode already encodes the specific variant.
-          // e.g. typeDisplay = "B788 · BOEING" not "B788 · BOEING 787 8"
-          info.typeDesc = mfr || null;
-          info.registration = a.registration ?? null;
-          info.operator     = a.registered_owner ?? null;
-          info.country      = a.registered_owner_country_iso_name ?? null;
-          info.year         = a.year_built ?? null;
+        if (d && d.ok && d.result) {
+          // Map common fields from proxy result
+          const a = d.result;
+          info.registration = a.registration ?? a.Registration ?? null;
+          info.typecode     = a.typecode ?? a.type_code ?? a.ICAOTypeCode ?? null;
+          info.typeDesc     = a.typeDesc ?? a.typeDescription ?? a.type ?? null;
+          info.operator     = a.operator ?? a.registered_owner ?? a.RegisteredOwners ?? null;
+          info.country      = a.country ?? a.registered_owner_country_iso_name ?? a.Country ?? null;
+          info.year         = a.year ?? a.year_built ?? null;
+          info.manufacturer = a.manufacturer ?? null;
+          info.model        = a.model ?? null;
         }
       }
     } catch { /* ignore */ }
-
-    // Fallback: hexdb.io — run if we're missing registration OR type code
-    if (!info.registration || !info.typecode) {
-      try {
-        const r = await fetch(`https://hexdb.io/api/v1/aircraft/${icao}`, { signal: AbortSignal.timeout(4000) });
-        if (r.ok) {
-          const d = await r.json();
-          if (!info.registration) info.registration = d.Registration    ?? null;
-          if (!info.typecode)     info.typecode     = d.ICAOTypeCode    ?? null;
-          // Build typeDesc from hexdb Type field if not already set
-          const hexType = d.Type ?? null;
-          if (!info.typeDesc && hexType) info.typeDesc = hexType;
-          if (!info.operator)  info.operator   = d.RegisteredOwners ?? null;
-          if (!info.country)   info.country    = d.Country ?? null;
-        }
-      } catch { /* ignore */ }
-    }
-
     aircraftCache.set(icao, { ...info });
   }
 

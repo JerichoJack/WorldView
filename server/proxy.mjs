@@ -1,3 +1,58 @@
+// --- Aircraft Info Proxy Endpoint ---
+// Proxies requests to external aircraft info APIs to avoid CORS issues on the frontend.
+// Usage: GET /api/proxy/aircraft/:icao?callsign=XXX
+const AIRCRAFT_INFO_APIS = [
+  (icao) => `https://api.adsbdb.com/v0/aircraft/icao/${icao}`,
+  (icao) => `https://api.hexdb.io/api/v1/aircraft/${icao}`,
+  (icao) => `https://api.adsb.lol/v2/aircraft/${icao}`,
+];
+
+async function fetchAircraftInfoFromApis(icao, callsign) {
+  icao = String(icao).toLowerCase();
+  const results = [];
+  for (const apiFn of AIRCRAFT_INFO_APIS) {
+    const url = apiFn(icao);
+    try {
+      const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (data && Object.keys(data).length > 0) {
+        results.push({ source: url, data });
+      }
+    } catch (err) {
+      // Ignore errors, try next API
+    }
+  }
+  // Prefer the first successful result
+  if (results.length > 0) {
+    // Optionally, merge/enrich with callsign if provided
+    const enriched = { ...results[0].data };
+    if (callsign && !enriched.callsign) enriched.callsign = callsign;
+    return { ok: true, icao, callsign, result: enriched, sources: results.map(r => r.source) };
+  }
+  return { ok: false, icao, callsign, error: 'No data found from external APIs' };
+}
+    // Aircraft Info Proxy Endpoint
+    if (url.startsWith('/api/proxy/aircraft/')) {
+      // e.g. /api/proxy/aircraft/abc123?callsign=XXX
+      const m = url.match(/^\/api\/proxy\/aircraft\/([a-fA-F0-9]{3,6})$/);
+      if (!m) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid ICAO address' }));
+        return;
+      }
+      const icao = m[1];
+      const callsign = query.callsign || '';
+      try {
+        const info = await fetchAircraftInfoFromApis(icao, callsign);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(info));
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err?.message ?? 'Aircraft info proxy failed' }));
+      }
+      return;
+    }
 // Dynamic aircraft database updater
 import { upsertAircraftRecord } from './collectors/upsertAircraftRecord.js';
 // API endpoint: POST /api/aircraftdb
