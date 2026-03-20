@@ -5529,29 +5529,33 @@ const server = http.createServer(async (req, res) => {
   } else if (url === '/health') {
     ensureTileCacheDir();
     const tileEntries = fs.readdirSync(TILE_CACHE_DIR).filter(name => name.endsWith('.json')).length;
-    res.writeHead(200);
-    res.end(JSON.stringify({
-      status: 'ok',
-      db: db.size,
-      hubs: ALL_HUBS.length,
-      hub_cache: hubCache.size,
-      cache: {
-        flights: flightSnapshotCache.size,
-        traffic: trafficSnapshotCache.size,
-        marine: marineSnapshotCache.size,
-        sat_points: satSnapshotCache.points?.length ?? 0,
-        camera_tiles: cameraTileCache.size,
-        camera_snapshots: cameraSnapshotCache.size,
-      },
-      tileCache: {
-        dir: TILE_CACHE_DIR,
-        entries: tileEntries,
-        ttlMs: TILE_CACHE_TTL_MS,
-      },
-    }));
+    if (!res.headersSent) {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        status: 'ok',
+        db: db.size,
+        hubs: ALL_HUBS.length,
+        hub_cache: hubCache.size,
+        cache: {
+          flights: flightSnapshotCache.size,
+          traffic: trafficSnapshotCache.size,
+          marine: marineSnapshotCache.size,
+          sat_points: satSnapshotCache.points?.length ?? 0,
+          camera_tiles: cameraTileCache.size,
+          camera_snapshots: cameraSnapshotCache.size,
+        },
+        tileCache: {
+          dir: TILE_CACHE_DIR,
+          entries: tileEntries,
+          ttlMs: TILE_CACHE_TTL_MS,
+        },
+      }));
+    }
   } else {
-    res.writeHead(404);
-    res.end(JSON.stringify({ error: 'Not found' }));
+    if (!res.headersSent) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Not found' }));
+    }
     return;
   }
 });
