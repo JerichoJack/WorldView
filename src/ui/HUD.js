@@ -2342,12 +2342,14 @@ const ROUTE_TTL     = 5 * 60 * 1000; // 5 minutes
 
 async function fetchAircraftInfo(icao, callsign) {
 
+
   const info = { registration: null, typecode: null, typeDesc: null, operator: null, route: null, country: null, year: null, manufacturer: null, model: null };
 
-  // 1. Static aircraft info (cached permanently per ICAO)
+  // 1. Static aircraft info (cached permanently per ICAO24)
   if (aircraftCache.has(icao)) {
     Object.assign(info, aircraftCache.get(icao));
   } else {
+    let proxyFailed = false;
     try {
       const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/${icao}${callsign ? `?callsign=${encodeURIComponent(callsign)}` : ''}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
@@ -2364,9 +2366,47 @@ async function fetchAircraftInfo(icao, callsign) {
           info.year         = a.year ?? a.year_built ?? null;
           info.manufacturer = a.manufacturer ?? null;
           info.model        = a.model ?? null;
+        } else {
+          proxyFailed = true;
+        }
+      } else {
+        proxyFailed = true;
+        if (r.status === 404) {
+          // Log for debugging
+          console.warn(`[fetchAircraftInfo] Proxy 404 for ICAO24: ${icao}`);
+        } else {
+          console.warn(`[fetchAircraftInfo] Proxy error for ICAO24: ${icao}, status: ${r.status}`);
         }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      proxyFailed = true;
+      console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO24: ${icao}`, err);
+    }
+
+    // Fallback to adsbdb.com if proxy failed
+    if (proxyFailed) {
+      try {
+        const r = await fetch(`https://api.adsbdb.com/v0/aircraft/icao24/${icao}`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const d = await r.json();
+          const a = d.response;
+          if (a) {
+            info.registration = a.registration ?? null;
+            info.typecode     = a.typecode ?? a.icao_type ?? null;
+            info.typeDesc     = a.type ?? a.type_description ?? null;
+            info.operator     = a.operator ?? a.owner ?? null;
+            info.country      = a.country ?? a.country_iso_name ?? null;
+            info.year         = a.year_built ?? null;
+            info.manufacturer = a.manufacturer ?? null;
+            info.model        = a.model ?? null;
+          }
+        } else {
+          console.warn(`[fetchAircraftInfo] adsbdb.com error for ICAO24: ${icao}, status: ${r.status}`);
+        }
+      } catch (err) {
+        console.warn(`[fetchAircraftInfo] adsbdb.com fetch failed for ICAO24: ${icao}`, err);
+      }
+    }
     aircraftCache.set(icao, { ...info });
   }
 
@@ -2384,7 +2424,6 @@ async function fetchAircraftInfo(icao, callsign) {
     const isAirlineCallsign = /^[A-Z]{2,3}\d{1,4}[A-Z]{0,2}$/.test(callsign)
       && callsign.length <= 9
       && !/^[0-9A-F]{6}$/i.test(callsign);
-    
     if (isAirlineCallsign) {
       const cached = routeCache.get(callsign);
       if (cached && Date.now() - cached.ts < ROUTE_TTL) {
@@ -2405,12 +2444,25 @@ async function fetchAircraftInfo(icao, callsign) {
               routeCache.set(callsign, { route: info.route, operator: airline, ts: Date.now() });
             }
           }
-        } catch { /* ignore */ }
+        } catch (err) {
+          console.warn(`[fetchAircraftInfo] adsbdb.com route fetch failed for callsign: ${callsign}`, err);
+        }
       }
     }
   }
 
-  return info;
+  // Ensure all fields are safe defaults (never undefined)
+  return {
+    registration: info.registration ?? null,
+    typecode: info.typecode ?? null,
+    typeDesc: info.typeDesc ?? null,
+    operator: info.operator ?? null,
+    route: info.route ?? null,
+    country: info.country ?? null,
+    year: info.year ?? null,
+    manufacturer: info.manufacturer ?? null,
+    model: info.model ?? null,
+  };
 }
 
 // ── Panel renderer ────────────────────────────────────────────────────────────
