@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "cesium": "^1.115.0",
+    "csv-parse": "^6.2.1",
+    "csv-stringify": "^6.7.0",
     "h3-js": "^4.4.0",
     "hls.js": "^1.6.15",
     "satellite.js": "^5.0.0",
