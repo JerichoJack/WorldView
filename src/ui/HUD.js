@@ -2192,7 +2192,29 @@ function initEntityPicker(viewer) {
       // correct 3D asset. This survives update cycles (OpenSky never sends typecodes)
       // and entity re-creation if the aircraft scrolls out then back into the viewport.
       if (info.typecode) setEnrichedTypecode(icao.toLowerCase(), info.typecode);
-      renderPanel(panel, { icao, callsign, altFt, kts, heading, squawk, vert, provider, dbFlags, classification, ...info }, viewer, entity);
+      // Ensure all fields are present for UI and POST
+      const panelData = {
+        icao,
+        callsign,
+        altFt,
+        kts,
+        heading,
+        squawk,
+        vert,
+        provider,
+        dbFlags,
+        classification,
+        registration: info.registration || '—',
+        typecode: info.typecode || '—',
+        typeDesc: info.typeDesc || '—',
+        operator: info.operator || '—',
+        route: info.route || '—',
+        country: info.country || '—',
+        year: info.year || '—',
+        manufacturer: info.manufacturer || '—',
+        model: info.model || '—',
+      };
+      renderPanel(panel, panelData, viewer, entity);
 
       // --- Auto-post enriched aircraft info to proxy for database update ---
       try {
@@ -2205,14 +2227,12 @@ function initEntityPicker(viewer) {
           operator: info.operator || '',
           country: info.country || '',
         };
-        // Only post if we have at least icao24 and typecode or model
-        if (postData.icao24 && (postData.typecode || postData.model)) {
-          fetch(`${BACKEND_BASE_URL}/api/aircraftdb`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(postData),
-          });
-        }
+        // Always POST all required fields (icao24, typecode, model) with fallback values
+        fetch(`${BACKEND_BASE_URL}/api/aircraftdb`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(postData),
+        });
       } catch (err) {
         // Silent fail; do not block UI
       }
@@ -2407,11 +2427,11 @@ function renderPanel(panel, data, viewer, entity) {
     registration, typecode, typeDesc, operator, route, country, year, loading
   } = data;
 
-  const altFtStr   = altFt  ? `${Math.round(altFt).toLocaleString()} ft`  : '–';
-  const altKm      = altFt  ? `${(altFt*0.3048/1000).toFixed(1)} km`      : '';
-  const spdStr     = kts    ? `${Math.round(kts)} kts · ${Math.round(kts*1.852)} km/h` : '–';
-  const hdgStr     = heading ? `${Math.round(heading)}°`                  : '–';
-  const vsStr      = vert   ? `${vert > 0 ? '↑' : '↓'} ${Math.abs(Math.round(vert)).toLocaleString()} ft/min` : 'level';
+  const altFtStr   = Number.isFinite(altFt) ? `${Math.round(altFt).toLocaleString()} ft`  : '—';
+  const altKm      = Number.isFinite(altFt) ? `${(altFt*0.3048/1000).toFixed(1)} km`      : '';
+  const spdStr     = Number.isFinite(kts)    ? `${Math.round(kts)} kts · ${Math.round(kts*1.852)} km/h` : '—';
+  const hdgStr     = Number.isFinite(heading) ? `${Math.round(heading)}°`                  : '—';
+  const vsStr      = Number.isFinite(vert)   ? (vert > 0 ? `↑ ${Math.abs(Math.round(vert)).toLocaleString()} ft/min` : (vert < 0 ? `↓ ${Math.abs(Math.round(vert)).toLocaleString()} ft/min` : 'level')) : '—';
   const acColor    = aircraftClassColor(classification, dbFlags, callsign);
   const acLabel    = aircraftClassLabel(classification, dbFlags, callsign);
   const typeDisplay = typecode
