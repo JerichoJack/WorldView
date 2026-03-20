@@ -4709,6 +4709,7 @@ async function handleFlights(query, res) {
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   // Parse URL and query
