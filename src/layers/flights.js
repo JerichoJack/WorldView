@@ -2880,16 +2880,20 @@ export function setFlightGlow(icaoHex, active) {
     }
   } else {
     if (selectedFlightId === id) selectedFlightId = null;
-    // Restore normal icon
+    // Restore normal icon using server-enriched icon/iconScale if present
     const classification = entity.properties?.classification?.getValue?.() ?? 'commercial';
     const color    = classificationColor(classification);
-    const category = entity.properties?.category?.getValue?.() ?? '';
-    const typecode = entity.properties?.typecode?.getValue?.() ?? '';
-    const shape    = getShape({ category, typecode });
-
+    // Use the icon/iconScale from properties (server-enriched)
+    const iconProp = entity.properties?.icon?.getValue?.() ?? null;
+    const iconScaleProp = entity.properties?.iconScale?.getValue?.() ?? 1;
+    const shape = iconProp || 'unknown';
     const normalIcon = buildSvgUri(shape, color);
     if (entity.billboard) {
       entity.billboard.image = new Cesium.ConstantProperty(normalIcon);
+      // Optionally, set width/height based on iconScale if needed
+      const iconSizePx = (typeof iconScaleProp === 'number' ? iconScaleProp : 1) * (window.ICON_SIZE_PX?.[shape] || 32);
+      entity.billboard.width = new Cesium.ConstantProperty(iconSizePx);
+      entity.billboard.height = new Cesium.ConstantProperty(iconSizePx);
     }
   }
 }
