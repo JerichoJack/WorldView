@@ -1446,13 +1446,83 @@ function altitudeColor(altFt) { return '#00e676'; } // stub — no longer used f
 // 6. Altitude proxy (last resort)
 // Returns the shape *name* string (key into SHAPES).
 
-// Client now expects aircraft objects to have 'icon' (shape name) and 'iconScale' fields from the server.
-// If missing, fallback to 'unknown' and scale 1.
-function getShape(a) {
-  return a.icon || 'unknown';
+// Normalize ICAO typecode for lookup (uppercase, trim, strip dashes/spaces, handle common suffixes)
+function normalizeTypecode(typecode) {
+  if (!typecode) return '';
+  let t = String(typecode).toUpperCase().trim();
+  t = t.replace(/[-_\s]/g, '');
+  // Remove common airline-specific suffixes (e.g. A320-200 -> A320)
+  t = t.replace(/(\d{3,4}|[A-Z]{1,2})$/, (m, p1, o, s) => {
+    // If the prefix is a known type, keep it, else strip
+    if (TypeDesignatorIcons[t]) return t;
+    // Remove trailing numbers/letters if not a known type
+    return t.slice(0, 4);
+  });
+  // Special handling for MAX/NEO suffixes
+  t = t.replace(/(MAX|NEO)$/,'');
+  return t;
 }
+
+// Improved icon lookup logic
+function getShape(a) {
+  // If server provided icon, use it
+  if (a.icon) return a.icon;
+  // Try normalized typecode
+  const typecode = normalizeTypecode(a.typecode);
+  if (typecode && TypeDesignatorIcons[typecode]) {
+    return TypeDesignatorIcons[typecode][0];
+  }
+  // Try typeDescription + WTC (5-char)
+  if (a.typeDescription && a.wtc) {
+    const descWtc = `${a.typeDescription.toUpperCase().trim()}-${String(a.wtc).toUpperCase().trim()}`;
+    if (TypeDescriptionIcons[descWtc]) return TypeDescriptionIcons[descWtc][0];
+  }
+  // Try typeDescription (3-char)
+  if (a.typeDescription) {
+    const desc = a.typeDescription.toUpperCase().trim();
+    if (TypeDescriptionIcons[desc]) return TypeDescriptionIcons[desc][0];
+  }
+  // Try typeDescription basic type letter (1-char)
+  if (a.typeDescription) {
+    const letter = a.typeDescription[0].toUpperCase();
+    if (TypeDescriptionIcons[letter]) return TypeDescriptionIcons[letter][0];
+  }
+  // Try ADS-B category
+  if (a.category && CategoryIcons[a.category]) {
+    return CategoryIcons[a.category][0];
+  }
+  // Fallback
+  return 'unknown';
+}
+
 function getIconScale(a) {
-  return typeof a.iconScale === 'number' ? a.iconScale : 1;
+  if (typeof a.iconScale === 'number') return a.iconScale;
+  // Try normalized typecode
+  const typecode = normalizeTypecode(a.typecode);
+  if (typecode && TypeDesignatorIcons[typecode]) {
+    return TypeDesignatorIcons[typecode][1];
+  }
+  // Try typeDescription + WTC (5-char)
+  if (a.typeDescription && a.wtc) {
+    const descWtc = `${a.typeDescription.toUpperCase().trim()}-${String(a.wtc).toUpperCase().trim()}`;
+    if (TypeDescriptionIcons[descWtc]) return TypeDescriptionIcons[descWtc][1];
+  }
+  // Try typeDescription (3-char)
+  if (a.typeDescription) {
+    const desc = a.typeDescription.toUpperCase().trim();
+    if (TypeDescriptionIcons[desc]) return TypeDescriptionIcons[desc][1];
+  }
+  // Try typeDescription basic type letter (1-char)
+  if (a.typeDescription) {
+    const letter = a.typeDescription[0].toUpperCase();
+    if (TypeDescriptionIcons[letter]) return TypeDescriptionIcons[letter][1];
+  }
+  // Try ADS-B category
+  if (a.category && CategoryIcons[a.category]) {
+    return CategoryIcons[a.category][1];
+  }
+  // Fallback
+  return 1;
 }
 
 // ── Build a data URI for a given shape + color ────────────────────────────────
