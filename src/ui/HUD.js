@@ -2351,7 +2351,7 @@ async function fetchAircraftInfo(icao, callsign) {
   } else {
     let proxyFailed = false;
     try {
-      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/${icao}${callsign ? `?callsign=${encodeURIComponent(callsign)}` : ''}`;
+      const url = `${BACKEND_BASE_URL}/api/proxy/aircraft/${icao}${callsign ? `?icao=${encodeURIComponent(callsign)}` : ''}`;
       const r = await fetch(url, { signal: AbortSignal.timeout(7000) });
       if (r.ok) {
         const d = await r.json();
@@ -2373,20 +2373,20 @@ async function fetchAircraftInfo(icao, callsign) {
         proxyFailed = true;
         if (r.status === 404) {
           // Log for debugging
-          console.warn(`[fetchAircraftInfo] Proxy 404 for ICAO24: ${icao}`);
+          console.warn(`[fetchAircraftInfo] Proxy 404 for ICAO: ${icao}`);
         } else {
-          console.warn(`[fetchAircraftInfo] Proxy error for ICAO24: ${icao}, status: ${r.status}`);
+          console.warn(`[fetchAircraftInfo] Proxy error for ICAO: ${icao}, status: ${r.status}`);
         }
       }
     } catch (err) {
       proxyFailed = true;
-      console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO24: ${icao}`, err);
+      console.warn(`[fetchAircraftInfo] Proxy fetch failed for ICAO: ${icao}`, err);
     }
 
     // Fallback to adsbdb.com if proxy failed
     if (proxyFailed) {
       try {
-        const r = await fetch(`https://api.adsbdb.com/v0/aircraft/icao24/${icao}`, { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(`https://api.adsbdb.com/v0/aircraft/icao/${icao}`, { signal: AbortSignal.timeout(5000) });
         if (r.ok) {
           const d = await r.json();
           const a = d.response;
@@ -2401,10 +2401,10 @@ async function fetchAircraftInfo(icao, callsign) {
             info.model        = a.model ?? null;
           }
         } else {
-          console.warn(`[fetchAircraftInfo] adsbdb.com error for ICAO24: ${icao}, status: ${r.status}`);
+          console.warn(`[fetchAircraftInfo] adsbdb.com error for ICAO: ${icao}, status: ${r.status}`);
         }
       } catch (err) {
-        console.warn(`[fetchAircraftInfo] adsbdb.com fetch failed for ICAO24: ${icao}`, err);
+        console.warn(`[fetchAircraftInfo] adsbdb.com fetch failed for ICAO: ${icao}`, err);
       }
     }
     aircraftCache.set(icao, { ...info });
