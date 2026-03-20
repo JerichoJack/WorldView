@@ -1,3 +1,10 @@
+// Determine backend base URL for API calls
+export const BACKEND_BASE_URL =
+  window.__shadowgridProxyUrl ||
+  import.meta.env.VITE_BACKEND_URL ||
+  (window.location.origin.includes(':5173')
+    ? window.location.origin.replace(':5173', ':3001')
+    : window.location.origin);
 /**
  * File: src/ui/HUD.js
  * Purpose: Main HUD composition (status, info panels, clock, and follow interactions).
@@ -2200,7 +2207,7 @@ function initEntityPicker(viewer) {
         };
         // Only post if we have at least icao24 and typecode or model
         if (postData.icao24 && (postData.typecode || postData.model)) {
-          fetch('/api/aircraftdb', {
+          fetch(`${BACKEND_BASE_URL}/api/aircraftdb`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(postData),
