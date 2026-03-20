@@ -35,7 +35,7 @@ import { feature as topojsonFeature } from 'topojson-client';
 import { parse as csvParse } from 'csv-parse/sync';
 
 const AIRCRAFT_CSV_PATHS = [
-  path.resolve(process.cwd(), 'public', 'aircraft-database-files', 'aircraftDatabase.csv'),
+  path.resolve(process.cwd(), 'public', 'aircraft-database-files', 'aircraftDatabase-New.csv'),
   path.resolve(process.cwd(), 'public', 'aircraft-database-files', 'aircraftTypes.csv'),
   path.resolve(process.cwd(), 'public', 'aircraft-database-files', 'manufacturers.csv'),
 ];
@@ -1342,6 +1342,41 @@ function loadAircraftDatabaseSync() {
   console.log('[AircraftDB] Loaded', Object.keys(aircraftDb).length, 'aircraft,', Object.keys(typeDb).length, 'types,', Object.keys(manufacturerDb).length, 'manufacturers');
 }
 
+
+// --- Server-side aircraft classification (mirrors client logic) ---
+function classifyAircraftServer(a) {
+  const squawk = String(a.squawk ?? '').trim();
+  const emergencyCode = ['7500', '7600', '7700'].includes(squawk);
+  const emergencyFlag = String(a.emergency ?? '').toLowerCase();
+  const isEmergency = emergencyCode || (emergencyFlag && emergencyFlag !== 'none');
+  if (isEmergency) return 'emergency';
+  if (a.onGround === true) return 'ground';
+  const cs = (a.callsign ?? '').toUpperCase().trim();
+  const prefix3 = cs.slice(0, 3);
+  const hasMilitaryCallsign = !!cs && MILITARY_CALLSIGN_PREFIXES.some(p => cs.startsWith(p));
+  const hasCommercialCallsign = isLikelyCommercialCallsign(cs)
+    || (!!cs && AIRLINE_PREFIXES.has(prefix3) && /\d/.test(cs));
+  const category = normalizeCategory(a.category);
+  const hasCommercialCategory = typeof category === 'number' && COMMERCIAL_NUMERIC_CATEGORIES.has(category);
+  if ((a.dbFlags ?? 0) & 1) return 'military';
+  if (hasMilitaryCallsign) return 'military';
+  if (hasCommercialCallsign || hasCommercialCategory) return 'commercial';
+  const typecode = (a.typecode ?? '').toUpperCase().trim();
+  const hasMilitaryType = !!typecode && MILITARY_TYPE_PREFIXES.some(p => typecode.startsWith(p));
+  if (hasMilitaryType) return 'military';
+  const hexLow = (a.id ?? a.icao24 ?? a.hex ?? '').toLowerCase();
+  if (!hasCommercialCategory && MILITARY_HEX_PREFIXES.some(p => hexLow.startsWith(p))) {
+    return 'military';
+  }
+  if (cs) {
+    if (isLikelyCommercialCallsign(cs)) return 'commercial';
+  }
+  if (typecode && typeDesignatorIcons[typecode]) {
+    return 'commercial';
+  }
+  return 'other';
+}
+
 function enrichAircraftFromDb(a) {
   const icao24 = (a.icao24 ?? a.hex ?? '').toLowerCase();
   if (!icao24) return;
@@ -1361,7 +1396,6 @@ function enrichAircraftFromDb(a) {
 
   // Try to infer typecode from model or manufacturer if still missing
   if (!a.typecode && a.model && typeof a.model === 'string') {
-    // Example: try to extract typecode from model string (e.g., "B738" in "Boeing 737-800 (B738)")
     const m = a.model.match(/\(([A-Z0-9]{3,5})\)/);
     if (m) a.typecode = m[1].toUpperCase();
   }
@@ -1380,108 +1414,107 @@ function enrichAircraftFromDb(a) {
   const mcode = (a.manufacturerCode || '').toUpperCase();
   if (mcode && manufacturerDb[mcode] && !a.manufacturer) a.manufacturer = manufacturerDb[mcode];
 
-  // --- Icon/Scale enrichment (mirrors client fallback logic) ---
-  // 1. Exact type designator match
+  // --- Icon/Scale enrichment (tar1090 hierarchy) ---
   let iconEntry = typeDesignatorIcons[typecode];
   if (iconEntry) {
     a.icon = iconEntry[0];
     a.iconScale = iconEntry[1];
-    return;
-  }
-
-  // 2–4. typeDescription fallback (with WTC, then without, then by first letter)
-  const td = (a.typeDescription || '').toUpperCase().trim();
-  const wtc = (a.wtc || '').toUpperCase().trim();
-  if (td.length === 3) {
-    // 2. With WTC suffix e.g. "L2J-M"
-    if (wtc.length === 1) {
-      const key5 = td + '-' + wtc;
-      if (key5 === 'L2J-M' && a.category && a.category.toUpperCase() === 'A2') {
-        a.icon = 'jet_swept';
-        a.iconScale = 1;
-        return;
+  } else {
+    const td = (a.typeDescription || '').toUpperCase().trim();
+    const wtc = (a.wtc || '').toUpperCase().trim();
+    let found = false;
+    if (td.length === 3) {
+      if (wtc.length === 1) {
+        const key5 = td + '-' + wtc;
+        if (key5 === 'L2J-M' && a.category && a.category.toUpperCase() === 'A2') {
+          a.icon = 'jet_swept';
+          a.iconScale = 1;
+          found = true;
+        } else if (TypeDescriptionIcons[key5]) {
+          const entry = TypeDescriptionIcons[key5];
+          a.icon = entry[0];
+          a.iconScale = entry[1];
+          found = true;
+        }
       }
-      if (TypeDescriptionIcons[key5]) {
-        const entry = TypeDescriptionIcons[key5];
+      if (!found && TypeDescriptionIcons[td]) {
+        const entry = TypeDescriptionIcons[td];
         a.icon = entry[0];
         a.iconScale = entry[1];
-        return;
+        found = true;
       }
-    }
-    // 3. Without WTC
-    if (TypeDescriptionIcons[td]) {
+      if (!found) {
+        const basicType = td.charAt(0);
+        if (TypeDescriptionIcons[basicType]) {
+          const entry = TypeDescriptionIcons[basicType];
+          a.icon = entry[0];
+          a.iconScale = entry[1];
+          found = true;
+        }
+      }
+    } else if (td.length === 1 && TypeDescriptionIcons[td]) {
       const entry = TypeDescriptionIcons[td];
       a.icon = entry[0];
       a.iconScale = entry[1];
-      return;
+      found = true;
     }
-    // 4. Basic type letter only
-    const basicType = td.charAt(0);
-    if (TypeDescriptionIcons[basicType]) {
-      const entry = TypeDescriptionIcons[basicType];
-      a.icon = entry[0];
-      a.iconScale = entry[1];
-      return;
+    if (!found) {
+      const cat = (a.category || '').toUpperCase().trim();
+      if (cat && CategoryIcons[cat]) {
+        const entry = CategoryIcons[cat];
+        a.icon = entry[0];
+        a.iconScale = entry[1];
+        found = true;
+      }
     }
-  } else if (td.length === 1 && TypeDescriptionIcons[td]) {
-    const entry = TypeDescriptionIcons[td];
-    a.icon = entry[0];
-    a.iconScale = entry[1];
-    return;
-  }
-
-  // 5. ADS-B category
-  const cat = (a.category || '').toUpperCase().trim();
-  if (cat && CategoryIcons[cat]) {
-    const entry = CategoryIcons[cat];
-    a.icon = entry[0];
-    a.iconScale = entry[1];
-    return;
-  }
-
-  // Regex catch-alls for common type-code patterns not in explicit tables
-  if (typecode) {
-    if (/^H\d/.test(typecode) || /^S(6|7|9)\d/.test(typecode) || /^(EC|BO|BK|AS|AW|MD9)/.test(typecode)) {
-      a.icon = 'helicopter';
-      a.iconScale = 1;
-      return;
+    if (!found && typecode) {
+      if (/^H\d/.test(typecode) || /^S(6|7|9)\d/.test(typecode) || /^(EC|BO|BK|AS|AW|MD9)/.test(typecode)) {
+        a.icon = 'helicopter';
+        a.iconScale = 1;
+        found = true;
+      } else if (/^(B74|B77|A38|A34)/.test(typecode)) {
+        a.icon = 'heavy_4e';
+        a.iconScale = 1;
+        found = true;
+      } else if (/^(B76|B78|A3[03]|A35)/.test(typecode)) {
+        a.icon = 'heavy_2e';
+        a.iconScale = 1;
+        found = true;
+      } else if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(typecode)) {
+        a.icon = 'airliner';
+        a.iconScale = 1;
+        found = true;
+      }
     }
-    if (/^(B74|B77|A38|A34)/.test(typecode)) {
-      a.icon = 'heavy_4e';
-      a.iconScale = 1;
-      return;
-    }
-    if (/^(B76|B78|A3[03]|A35)/.test(typecode)) {
-      a.icon = 'heavy_2e';
-      a.iconScale = 1;
-      return;
-    }
-    if (/^(B7|A3|E1|E17|E19|CRJ|RJ|F\d)/.test(typecode)) {
-      a.icon = 'airliner';
-      a.iconScale = 1;
-      return;
+    if (!found) {
+      const alt = a.altFt ?? 0;
+      if (alt > 25000) {
+        a.icon = 'airliner';
+        a.iconScale = 1;
+      } else if (alt > 5000) {
+        a.icon = 'twin_large';
+        a.iconScale = 1;
+      } else if (alt > 0) {
+        a.icon = 'cessna';
+        a.iconScale = 1;
+      } else {
+        a.icon = 'unknown';
+        a.iconScale = 1;
+      }
     }
   }
 
-  // 6. Altitude proxy (absolute last resort)
-  const alt = a.altFt ?? 0;
-  if (alt > 25000) {
-    a.icon = 'airliner';
-    a.iconScale = 1;
-    return;
-  }
-  if (alt > 5000) {
-    a.icon = 'twin_large';
-    a.iconScale = 1;
-    return;
-  }
-  if (alt > 0) {
-    a.icon = 'cessna';
-    a.iconScale = 1;
-    return;
-  }
-  a.icon = 'unknown';
-  a.iconScale = 1;
+  // --- Classification enrichment ---
+  a.classification = classifyAircraftServer(a);
+
+  // --- Ensure all enrichment fields are present ---
+  if (!('icon' in a)) a.icon = 'unknown';
+  if (!('iconScale' in a)) a.iconScale = 1;
+  if (!('typecode' in a)) a.typecode = '';
+  if (!('typeDescription' in a)) a.typeDescription = '';
+  if (!('wtc' in a)) a.wtc = '';
+  if (!('category' in a)) a.category = '';
+  if (!('classification' in a)) a.classification = 'other';
 }
 
 // Load on startup
